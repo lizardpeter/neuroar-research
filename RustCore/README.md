@@ -1,19 +1,18 @@
-# NeuroAR Rust core (initial cross-compilation check)
+# RustCore native iOS link
 
-This is the **first** platform-neutral Rust module. It deliberately implements a
-small tested numerical primitive rather than replacing the tested Swift
-imaging pipeline before we have a successful iOS CI build.
+NeuroAR is a **hybrid Swift + Rust** application. `scripts/build-rust-ios.sh` is
+run by an Xcode prebuild phase and compiles a native Rust static library for
+`iphoneos` or `iphonesimulator`, including per-architecture compilation and
+`lipo` when Xcode requests multiple simulator architectures. The app links the
+result via `-lneuroar_core`; `NeuroAR/RustBridge.swift` calls its exported C ABI.
 
-- `cargo test --manifest-path RustCore/Cargo.toml` tests the native crate.
-- `cargo build --manifest-path RustCore/Cargo.toml --release --target aarch64-apple-ios` builds a device static library on a Mac with Xcode and the Rust target installed.
-- `cargo build --manifest-path RustCore/Cargo.toml --release --target aarch64-apple-ios-sim` builds the arm64 simulator equivalent.
-- The stable C ABI is declared in `include/neuroar_core.h`.
+Currently the visible trajectory length display uses `neuroar_distance_mm`.
+This is a real Swift-to-Rust call, not just a standalone Rust CI compilation.
+Other medical-image and registration math remains in tested Swift
+`GeometryCore` until separately migrated and validated.
 
-**Integration status:** The `.a` library is **not yet linked into the Xcode
-target**, and the Swift MRI engine remains authoritative. The CI Rust build
-proves cross-compile viability, not finished integration.
-
-Planned division of labor: **SwiftUI / ARKit / RealityKit** for native sensors
-and UI; **Rust** for portable MRI decoding, registration, resampling,
-segmentation preprocessing, and geometry. Any changes affecting patient
-anatomy require independent geometry/coordinate tests. Research only.
+Developer requirements: Xcode/Apple SDK and `rustup`/`cargo` with the iOS
+cross-compile targets. GitHub macOS CI installs Rust before compiling the app.
+The production TestFlight archive workflow does the same. No private Rust
+binary artifact is checked into the public repository. All results are
+research demonstration only, not medical-device performance guarantees.

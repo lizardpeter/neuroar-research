@@ -18,6 +18,17 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var depthMm = 30.0
     @Published private(set) var meshImported = false
     @Published private(set) var plannerLinked = false
+    @Published private(set) var markerVisible = false
+    @Published private(set) var markerBound = false
+    @Published private(set) var surfaceFitRMSEmeters: Double?
+    @Published private(set) var lastPhantomDiagnostic: PhantomDepthStatistics?
+    @Published var phantomOnlyAcknowledged = false
+    private var scalpSamplePointsMeters: [Point3] = []
+    private var trackedMarkerTransform: simd_float4x4?
+    private var mriToMarkerTransform: simd_float4x4?
+    var canBindMarker: Bool { registration != nil && markerVisible && trackedMarkerTransform != nil }
+    var canRefineSurface: Bool { registration != nil && scalpSamplePointsMeters.count >= 15 && capturedPoints.count >= 4 }
+
 
     weak var arView: ARView?
     private var root: Entity?
@@ -49,6 +60,15 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         let config = ARWorldTrackingConfiguration()
         config.frameSemantics.insert(.sceneDepth)
         config.worldAlignment = .gravity
+        // Image anchors track a physical marker visible to the REAR camera.
+        // ARKit's userFaceTrackingEnabled is for the camera user's face,
+        // not for tracking an arbitrary person in front of the iPhone.
+        if let image=UIImage(named:"HeadMarker")?.cgImage {
+            let marker=ARReferenceImage(cgImage:image,orientation:.up,physicalWidth:0.050)
+            marker.name="NeuroAR 50 mm phantom marker"
+            config.detectionImages=[marker]
+            config.maximumNumberOfTrackedImages=1
+        }
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
@@ -58,6 +78,121 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
             clearRegistration(reason:"AR camera closed; all world-space landmarks invalidated.")
             arView=nil
             trackingIsNormal=false
+        }
+    }
+
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        updateHeadMarker(anchors)
+    }
+
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        updateHeadMarker(anchors)
+    }
+
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        guard anchors.contains(where: { $0 is ARImageAnchor }) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.markerVisible=false
+            self?.trackedMarkerTransform=nil
+            self?.updateMarkerFollower()
+        }
+    }
+
+    private func updateHeadMarker(_ anchors:[ARAnchor]) {
+        guard let item=anchors.compactMap({ $0 as? ARImageAnchor })
+            .first(where: { $0.referenceImage.name == "NeuroAR 50 mm phantom marker" }) else { return }
+        let pose=item.transform
+        let tracked=item.isTracked
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.markerVisible=tracked
+            self.trackedMarkerTransform=tracked ? pose : nil
+            self.updateMarkerFollower()
+        }
+    }
+
+    func bindToMarker() {
+        guard let marker=trackedMarkerTransform,markerVisible,let fit=registration,
+              trackingIsNormal else {
+            status="Keep the printed 50 mm marker fully visible and finish landmark alignment first."
+            return
+        }
+        mriToMarkerTransform=simd_inverse(marker)*worldFromMRI(fit)
+        markerBound=true
+        status="Research marker following enabled. Overlay is hidden whenever marker tracking is lost. This is NOT anatomical or surgical accuracy."
+        updateMarkerFollower()
+    }
+
+    private func worldFromMRI(_ result:RegistrationResult)->simd_float4x4 {
+        let q=result.quaternionWXYZ
+        var matrix=simd_float4x4(simd_quatf(ix:Float(q[1]),iy:Float(q[2]),iz:Float(q[3]),r:Float(q[0])))
+        let t=result.translationMeters
+        matrix.columns.3=SIMD4<Float>(Float(t.x),Float(t.y),Float(t.z),1)
+        return matrix
+    }
+
+    private func updateMarkerFollower() {
+        guard let root else { return }
+        if markerBound,let marker=trackedMarkerTransform,markerVisible,
+           let relative=mriToMarkerTransform,trackingIsNormal {
+            root.transform=Transform(matrix:marker*relative)
+            root.isEnabled=true
+        } else {
+            // Never leave a real-MRI static projection visible on a movable head.
+            root.isEnabled=study.isSynthetic && !markerBound && trackingIsNormal
+        }
+    }
+
+    func recordPhantomDiagnostic() {
+        guard phantomOnlyAcknowledged else {
+            status="Only run sensor diagnostics against a consenting synthetic mannequin/phantom. Confirm phantom mode first."
+            return
+        }
+        guard lidarSupported,trackingIsNormal,capturedPoints.count>=3,
+              let frame=arView?.session.currentFrame else {
+            status="LiDAR tracking and at least three physical phantom reference points are required."
+            return
+        }
+        do {
+            let points=try DepthPointCloud.capture(frame:frame,around:capturedPoints)
+            guard let metrics=PhantomDepthStatistics.analyze(points) else {
+                status="Not enough high-confidence depth samples; no result recorded."
+                return
+            }
+            lastPhantomDiagnostic=metrics
+            status=String(format:"Phantom sensor capture: %d samples; spatial spread %.1f mm (NOT depth accuracy).",metrics.sampleCount,metrics.spatialSpreadMm)
+        } catch { status="Phantom capture failed: \(error.localizedDescription)" }
+    }
+
+    /// A landmark-seeded geometric *refinement*, never an automatic identity match.
+    /// Requires an externally labelled scalp mask and ≥4 manual landmarks.
+    func refineScalpSurface() {
+        guard canRefineSurface,trackingIsNormal,let fit=registration,
+              let frame=arView?.session.currentFrame else {
+            status="Surface refinement needs 4+ landmarks, a deliberately labelled scalp mask, and normal LiDAR tracking."
+            return
+        }
+        do {
+            let cloud=try DepthPointCloud.capture(frame:frame,around:capturedPoints)
+            guard cloud.count>=25 else { throw SurfaceRegistrationError.insufficientCorrespondences }
+            let report=try TrimmedSurfaceICP.refine(sourceMeters:scalpSamplePointsMeters,
+                                                    observedMeters:cloud,initial:fit)
+            // The reserved final landmark remains independent of the ICP fit.
+            guard let last=study.landmarks.last,let measured=capturedPoints.last else {
+                throw SurfaceRegistrationError.invalidInput
+            }
+            let p=last.pointMm
+            let transformed=report.transform.transform(Point3(p.x/1000,p.y/1000,p.z/1000))
+            let heldout=(transformed-measured).norm
+            guard heldout<=0.03 else { throw SurfaceRegistrationError.unstableFit }
+            registration=report.transform
+            surfaceFitRMSEmeters=report.fittedRMSEMeters
+            heldOutSurfaceResidualMeters=heldout
+            markerBound=false;mriToMarkerTransform=nil // previous attachment pose now invalid
+            status=String(format:"Experimental ICP fit %.1f mm / %d pairs; independent surface point %.1f mm. Rebind marker. NOT a surgical accuracy measurement.",report.fittedRMSEMeters*1000,report.matchedPointCount,heldout*1000)
+            render()
+        } catch {
+            status="Surface refinement declined: \(error.localizedDescription). Original landmark fit retained."
         }
     }
 
@@ -142,6 +277,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
 
     func clearRegistration(reason: String = "Registration reset. Retake landmarks.") {
         registration=nil; heldOutSurfaceResidualMeters=nil;capturedPoints=[]
+        surfaceFitRMSEmeters=nil;markerBound=false;mriToMarkerTransform=nil
         markerAnchors.forEach { $0.removeFromParent() }
         markerAnchors=[]
         anchor?.removeFromParent(); anchor=nil; root=nil
@@ -162,6 +298,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
             }
             study=loaded; selectedIndex=0; depthMm=min(30,loaded.trajectories[0].lengthMm)
             customMesh=nil; intensityPreview=nil; roiPreview=nil
+            scalpSamplePointsMeters=[]
             plannerLinked=false; meshImported=false
             clearRegistration(reason:"Loaded \(loaded.title). Capture corresponding facial landmarks.")
         } catch { status="Study import error: \(error.localizedDescription)" }
@@ -171,7 +308,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     /// A fresh landmark registration is mandatory and any prior world-space
     /// anchor is invalidated. This is visualization, NOT instrument guidance.
     func importPlanningStudy(study planned:Study, intensitySurface:PreviewSurface?,
-                             roiSurface:PreviewSurface?, displayedDepthMm:Double) {
+                             roiSurface:PreviewSurface?, scalpMaskDesignated:Bool, displayedDepthMm:Double) {
         clearRegistration(reason:"MRI planning study linked. Capture the corresponding physical head landmarks in the displayed order. Unvalidated research mode.")
         study=planned
         selectedIndex=0
@@ -181,6 +318,8 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         // Bound geometry for phone memory. Coarse previews never establish anatomy.
         intensityPreview=makePreviewEntity(intensitySurface,color:UIColor.systemGray.withAlphaComponent(0.35))
         roiPreview=makePreviewEntity(roiSurface,color:UIColor.systemCyan.withAlphaComponent(0.45))
+        scalpSamplePointsMeters = scalpMaskDesignated ?
+            (roiSurface?.verticesMm ?? []).prefix(12000).map { Point3($0.x/1000,$0.y/1000,$0.z/1000) } : []
         if intensityPreview == nil && roiPreview == nil {
             status += " No segmented 3D surface available; trajectories and landmarks only."
         }
@@ -192,7 +331,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         study = .synthetic
         selectedIndex = 0
         depthMm = 30
-        intensityPreview=nil;roiPreview=nil
+        intensityPreview=nil;roiPreview=nil;scalpSamplePointsMeters=[]
         plannerLinked=false
     }
 
@@ -265,6 +404,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         sceneAnchor.addChild(sceneRoot)
         arView.scene.addAnchor(sceneAnchor)
         anchor=sceneAnchor; root=sceneRoot
+        updateMarkerFollower()
 
         if plannerLinked {
             if let intensityPreview {

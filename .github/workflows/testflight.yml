@@ -49,6 +49,14 @@ jobs:
             if [[ -z "${!name:-}" ]]; then echo "Missing GitHub variable/secret: $name" >&2; exit 1; fi
           done
 
+      - name: Install native Rust toolchain for iPhone archive
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Test Rust core
+        run: cargo test --manifest-path RustCore/Cargo.toml --locked
+
       - name: Run core validation suite
         run: swift test --package-path GeometryCore
 

@@ -55,7 +55,7 @@ public enum DicomSeriesReader {
                                    kMm:canonical(k))
         return try VoxelVolume(dimensions:[first.columns,first.rows,sorted.count],
                                affine:affine,voxels:sorted.flatMap { $0.pixels },
-                               description:"DICOM MR · \(first.columns)×\(first.rows)×\(sorted.count) · uncompressed")
+                               description:"DICOM MR · \(first.columns)×\(first.rows)×\(sorted.count) · validated grayscale")
     }
 
     private static func readSlice(_ data:Data) throws -> Slice {
@@ -110,12 +110,43 @@ public enum DicomSeriesReader {
         guard let ts=transferSyntax else { throw ImagingError.invalidHeader("missing Transfer Syntax UID") }
         let explicit:Bool
         switch ts {
-        case "1.2.840.10008.1.2.1":explicit=true
+        case "1.2.840.10008.1.2.1", "1.2.840.10008.1.2.5":explicit=true
         case "1.2.840.10008.1.2":explicit=false
         default:throw ImagingError.unsupported("transfer syntax \(ts); only uncompressed Little Endian supported")
         }
         var pixelData:[UInt8]?
         while pos+8<=bytes.count {
+            // Encapsulated RLE uses undefined-length Pixel Data, which cannot
+            // be parsed as a normal explicit-VR element.
+            if tag(pos)==0x7FE00010 && ts=="1.2.840.10008.1.2.5" {
+                guard pos+12<=bytes.count,
+                      (String(bytes:bytes[(pos+4)..<(pos+6)],encoding:.ascii)=="OB" ||
+                       String(bytes:bytes[(pos+4)..<(pos+6)],encoding:.ascii)=="OW"),
+                      u32(pos+8)==UInt32.max else { throw ImagingError.invalidPayload }
+                pos += 12
+                func readItem() throws -> [UInt8] {
+                    guard pos+8<=bytes.count, tag(pos)==0xFFFEE000 else { throw ImagingError.invalidPayload }
+                    let length=Int(u32(pos+4))
+                    guard length <= bytes.count-pos-8 else { throw ImagingError.invalidPayload }
+                    pos += 8
+                    let item=Array(bytes[pos..<(pos+length)]);pos += length
+                    return item
+                }
+                let offsets=try readItem() // Basic Offset Table, not image data.
+                guard offsets.isEmpty || (offsets.count==4 && offsets.allSatisfy({ $0==0 })) else {
+                    throw ImagingError.unsupported("multi-frame or unusual RLE basic offset table")
+                }
+                var payload=[UInt8]()
+                while pos+8<=bytes.count && tag(pos)==0xFFFEE000 {
+                    let part=try readItem()
+                    guard part.count <= 20_000_000-payload.count else { throw ImagingError.tooLarge }
+                    payload += part
+                }
+                guard pos+8<=bytes.count,tag(pos)==0xFFFEE0DD,u32(pos+4)==0,
+                      !payload.isEmpty else { throw ImagingError.invalidPayload }
+                pixelData=payload
+                break
+            }
             let e=try parseElement(explicit:explicit)
             if e.tag==0x7FE00010 {
                 pixelData=Array(bytes[e.valueStart..<(e.valueStart+e.valueLength)])
@@ -164,7 +195,14 @@ public enum DicomSeriesReader {
             throw ImagingError.unsupported("multiframe and enhanced MRI are not supported")
         }
         let count=rows*cols,bytesPerVoxel=bitAllocated/8
-        guard count<=4_000_000,image.count>=count*bytesPerVoxel else { throw ImagingError.invalidPayload }
+        guard count<=4_000_000 else { throw ImagingError.tooLarge }
+        let decoded:[UInt8]
+        if ts=="1.2.840.10008.1.2.5" {
+            decoded=try DicomRLEDecoder.decode(Data(image),pixelCount:count,bitsAllocated:bitAllocated)
+        } else {
+            guard image.count>=count*bytesPerVoxel else { throw ImagingError.invalidPayload }
+            decoded=image
+        }
         let slope=Double(ascii(0x00281053) ?? "1") ?? 1
         let intercept=Double(ascii(0x00281052) ?? "0") ?? 0
         guard slope.isFinite,intercept.isFinite else { throw ImagingError.invalidHeader("invalid rescale slope/intercept") }
@@ -173,8 +211,8 @@ public enum DicomSeriesReader {
         var voxels=[Float](repeating:0,count:count)
         for i in 0..<count {
             let raw:UInt32
-            if bitAllocated==8 { raw=UInt32(image[i]) }
-            else { raw=UInt32(image[i*2]) | (UInt32(image[i*2+1])<<8) }
+            if bitAllocated==8 { raw=UInt32(decoded[i]) }
+            else { raw=UInt32(decoded[i*2]) | (UInt32(decoded[i*2+1])<<8) }
             let stored=raw & mask
             let signed:Double
             if representation==1 && (stored & signBit) != 0 {

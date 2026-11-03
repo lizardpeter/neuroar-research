@@ -29,3 +29,6 @@ GeometryCore/.swiftpm/
 
 # Cargo
 RustCore/target/
+
+# Synthetic-only test fixture (never real scans)
+!GeometryCore/Tests/GeometryCoreTests/Fixtures/synthetic-phantom.nii.gz

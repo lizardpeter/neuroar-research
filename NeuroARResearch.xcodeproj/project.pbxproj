@@ -5,6 +5,9 @@
     objectVersion = 56;
     objects = {
 /* Begin PBXBuildFile section */
+        90A9B1A94224100200010001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 90A9B1A94224100200010002 /* Assets.xcassets */; };
+        90A9B1A94224100200010003 /* DepthPointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90A9B1A94224100200010004 /* DepthPointCloud.swift */; };
+        90A9B1A94224100100010001 /* RustBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90A9B1A94224100100010002 /* RustBridge.swift */; };
         B1BCF113DD503FDAE52EEAAF /* TrajectorySceneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BCF113DD503FDAE52EEAAF /* TrajectorySceneView.swift */; };
         B1BCF113DD503FDAE52EEAAD /* MRIPlanningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BCF113DD503FDAE52EEAAD /* MRIPlanningView.swift */; };
         E34777DEBF7BA5D8E5CDEFEA /* NeuroARApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FFB074A988279CDEC0BC56 /* NeuroARApp.swift */; };
@@ -14,6 +17,9 @@
         ED5515BE9EC5C2E8DC76B514 /* GeometryCore in Frameworks */ = {isa = PBXBuildFile; productRef = E55A8CC6397119BC2F346606 /* GeometryCore */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
+        90A9B1A94224100200010002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+        90A9B1A94224100200010004 /* DepthPointCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepthPointCloud.swift; sourceTree = "<group>"; };
+        90A9B1A94224100100010002 /* RustBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RustBridge.swift; sourceTree = "<group>"; };
         A1BCF113DD503FDAE52EEAAF /* TrajectorySceneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrajectorySceneView.swift; sourceTree = "<group>"; };
         A1BCF113DD503FDAE52EEAAD /* MRIPlanningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MRIPlanningView.swift; sourceTree = "<group>"; };
         91FFB074A988279CDEC0BC56 /* NeuroARApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuroARApp.swift; sourceTree = "<group>"; };
@@ -32,33 +38,52 @@
             16260C585190F1B74295BB31 /* ContentView.swift */,
             1958B64E1A8EEF7ED2A0A3D3 /* ARHeadController.swift */,
             11FEAEE0B4C9F935BBF46102 /* DepthUnprojector.swift */,
+            90A9B1A94224100100010002 /* RustBridge.swift */,
+            90A9B1A94224100200010004 /* DepthPointCloud.swift */,
+            90A9B1A94224100200010002 /* Assets.xcassets */,
             A1BCF113DD503FDAE52EEAAD /* MRIPlanningView.swift */,
             A1BCF113DD503FDAE52EEAAF /* TrajectorySceneView.swift */,
         ); path = NeuroAR; sourceTree = "<group>"; };
         BFE00B156DCFC34C4751A6E5 /* Products */ = {isa = PBXGroup; children = (6D795F13C8C22E022040EE00 /* NeuroARResearch.app */,); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 /* Begin PBXNativeTarget section */
-        7D1043473D55BFA90E8530D3 /* NeuroARResearch */ = {isa = PBXNativeTarget; buildConfigurationList = F37922C48DA5978D02C9E50E /* Build configuration list for PBXNativeTarget "NeuroARResearch" */; buildPhases = (BCE16DD0260827ECF338C787 /* Sources */, 7561BFB015D8F536760CB671 /* Frameworks */, 0189424A5A60FED329FA868E /* Resources */,); buildRules = (); dependencies = (); name = NeuroARResearch; packageProductDependencies = (E55A8CC6397119BC2F346606 /* GeometryCore */,); productName = NeuroARResearch; productReference = 6D795F13C8C22E022040EE00 /* NeuroARResearch.app */; productType = "com.apple.product-type.application"; };
+        7D1043473D55BFA90E8530D3 /* NeuroARResearch */ = {isa = PBXNativeTarget; buildConfigurationList = F37922C48DA5978D02C9E50E /* Build configuration list for PBXNativeTarget "NeuroARResearch" */; buildPhases = (90A9B1A94224100100010003 /* Build RustCore */, BCE16DD0260827ECF338C787 /* Sources */, 7561BFB015D8F536760CB671 /* Frameworks */, 0189424A5A60FED329FA868E /* Resources */,); buildRules = (); dependencies = (); name = NeuroARResearch; packageProductDependencies = (E55A8CC6397119BC2F346606 /* GeometryCore */,); productName = NeuroARResearch; productReference = 6D795F13C8C22E022040EE00 /* NeuroARResearch.app */; productType = "com.apple.product-type.application"; };
 /* End PBXNativeTarget section */
 /* Begin PBXProject section */
         98F54143AB4E86B28C3AFEE0 /* Project object */ = {isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 1600; TargetAttributes = { 7D1043473D55BFA90E8530D3 = { CreatedOnToolsVersion = 16.0; }; }; }; buildConfigurationList = 862894B703A6DEDF96A9DD6C /* Build configuration list for PBXProject */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = EDA6D6223944636B9C5B54AA; packageReferences = (8F5B626E483F79FC4BC78D05 /* XCLocalSwiftPackageReference "GeometryCore" */,); productRefGroup = BFE00B156DCFC34C4751A6E5; projectDirPath = ""; projectRoot = ""; targets = (7D1043473D55BFA90E8530D3 /* NeuroARResearch */,); };
 /* End PBXProject section */
 /* Begin PBXResourcesBuildPhase section */
-        0189424A5A60FED329FA868E /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        0189424A5A60FED329FA868E /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (90A9B1A94224100200010001 /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
+/* Begin PBXShellScriptBuildPhase section */
+        90A9B1A94224100100010003 /* Build RustCore */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Build RustCore";
+            outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "bash \"${PROJECT_DIR}/scripts/build-rust-ios.sh\"";
+        };
+/* End PBXShellScriptBuildPhase section */
 /* Begin PBXSourcesBuildPhase section */
         BCE16DD0260827ECF338C787 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
             E34777DEBF7BA5D8E5CDEFEA /* NeuroARApp.swift in Sources */,
             2A8F5CFFD87674FB2B9862C3 /* ContentView.swift in Sources */,
             D32B8D0A2638778B104E917E /* ARHeadController.swift in Sources */,
             949155C399736BA356997B01 /* DepthUnprojector.swift in Sources */,
+            90A9B1A94224100100010001 /* RustBridge.swift in Sources */,
+            90A9B1A94224100200010003 /* DepthPointCloud.swift in Sources */,
             B1BCF113DD503FDAE52EEAAD /* MRIPlanningView.swift in Sources */,
             B1BCF113DD503FDAE52EEAAF /* TrajectorySceneView.swift in Sources */,
         ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 /* Begin XCBuildConfiguration section */
-        C04B9FE62C59E3D8C4B43BE4 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_NSCameraUsageDescription = "Camera and LiDAR depth are used for research-only 3D surface capture and AR overlay."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.3; PRODUCT_BUNDLE_IDENTIFIER = org.neuroar.research.app; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
-        B82617E99FBCD53BB0059C00 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_NSCameraUsageDescription = "Camera and LiDAR depth are used for research-only 3D surface capture and AR overlay."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.3; PRODUCT_BUNDLE_IDENTIFIER = org.neuroar.research.app; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+        C04B9FE62C59E3D8C4B43BE4 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = NO; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/.build/rust/$(PLATFORM_NAME)"); OTHER_LDFLAGS = ("$(inherited)", "-lneuroar_core"); CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_NSCameraUsageDescription = "Camera and LiDAR depth are used for research-only 3D surface capture and AR overlay."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.8; PRODUCT_BUNDLE_IDENTIFIER = org.neuroar.research.app; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        B82617E99FBCD53BB0059C00 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = NO; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/.build/rust/$(PLATFORM_NAME)"); OTHER_LDFLAGS = ("$(inherited)", "-lneuroar_core"); CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_NSCameraUsageDescription = "Camera and LiDAR depth are used for research-only 3D surface capture and AR overlay."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; IPHONEOS_DEPLOYMENT_TARGET = 18.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 0.8; PRODUCT_BUNDLE_IDENTIFIER = org.neuroar.research.app; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = minimal; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
         E5FAE1233D982CF4928FD0DB /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SWIFT_VERSION = 5.0; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone";  }; name = Debug; };
         9CE61C30A4C338AC9340D41A /* Release */ = {isa = XCBuildConfiguration; buildSettings = { ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SWIFT_VERSION = 5.0; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O";  }; name = Release; };
 /* End XCBuildConfiguration section */

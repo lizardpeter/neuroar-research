@@ -14,6 +14,7 @@ final class MRIPlanningModel: ObservableObject {
 
     @Published private(set) var volume = VoxelVolume.syntheticDemo()
     @Published private(set) var mask: VoxelVolume?
+    @Published var maskIsScalp = false
     @Published private(set) var tissueSurface: PreviewSurface?
     @Published private(set) var maskSurface: PreviewSurface?
     @Published private(set) var surfaceStatus = "3D preview not yet generated"
@@ -140,6 +141,7 @@ final class MRIPlanningModel: ObservableObject {
         candidates=[];selectedCandidateID=nil;landmarks=[]
         volume=loaded
         mask=nil
+        maskIsScalp=false
         maskRevision += 1
         cursorMm=loaded.bounds.center
         entryMm=loaded.bounds.center
@@ -163,11 +165,12 @@ final class MRIPlanningModel: ObservableObject {
         Task.detached(priority:.userInitiated) { [weak self] in
             let result: Result<VoxelVolume,Error>
             do {
-                guard url.pathExtension.lowercased()=="nii" else {
-                    throw ImagingError.unsupported("select an uncompressed .nii file; decompress .nii.gz before import")
+                guard url.lastPathComponent.lowercased().hasSuffix(".nii") ||
+                      url.lastPathComponent.lowercased().hasSuffix(".nii.gz") else {
+                    throw ImagingError.unsupported("select a .nii or .nii.gz volume")
                 }
                 let data=try Data(contentsOf:url,options:[.mappedIfSafe])
-                let v=try NiftiReader.load(data)
+                let v=try CompressedNiftiReader.load(data)
                 result = .success(v)
             } catch { result = .failure(error) }
             if access { url.stopAccessingSecurityScopedResource() }
@@ -184,6 +187,7 @@ final class MRIPlanningModel: ObservableObject {
                             return
                         }
                         self.mask=loaded
+                        self.maskIsScalp=false
                         self.maskRevision += 1
                         self.rebuildPreview()
                         self.status="ROI segmentation loaded. Overlap is NOT a surgical safety or vessel-clearance measure."
@@ -203,7 +207,7 @@ final class MRIPlanningModel: ObservableObject {
     }
 
     func resetDemo() {
-        volume=VoxelVolume.syntheticDemo();mask=nil;maskRevision += 1;cursorMm=Point3(0,0,0)
+        volume=VoxelVolume.syntheticDemo();mask=nil;maskIsScalp=false;maskRevision += 1;cursorMm=Point3(0,0,0)
         candidates=[];selectedCandidateID=nil;landmarks=[]
         entryMm=Point3(30,65,32);targetMm=Point3(5,0,4)
         lowWindow=0;highWindow=200;depthMm=30
@@ -343,6 +347,10 @@ struct MRIPlanningView: View {
                     }.font(.caption)
                     Toggle("Imported ROI surface",isOn:$model.showROI3D).font(.caption)
                         .disabled(model.mask == nil)
+                    Toggle("This imported mask explicitly represents the external SCALP surface",isOn:$model.maskIsScalp)
+                        .font(.caption).disabled(model.mask == nil)
+                    Text("Only enable this when you have independently identified the mask as scalp. Arbitrary tissue-intensity surfaces and other ROI masks are not valid for head-surface registration.")
+                        .font(.caption2).foregroundStyle(.orange)
                     HStack {
                         Text("Surface intensity threshold")
                         Spacer()
@@ -412,11 +420,11 @@ struct MRIPlanningView: View {
             if model.tissueSurface == nil && !model.surfaceBusy { model.rebuildPreview() }
         }
         .fileImporter(isPresented:$importingVolume,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data]) { result in
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data]) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:false) }
         }
         .fileImporter(isPresented:$importingMask,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data]) { result in
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data]) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:true) }
         }
         .fileImporter(isPresented:$importingPlan,allowedContentTypes:[.json]) { result in
@@ -443,6 +451,7 @@ struct MRIPlanningView: View {
                 arController.importPlanningStudy(study:study,
                                                  intensitySurface:model.showIntensity3D ? model.tissueSurface : nil,
                                                  roiSurface:model.showROI3D ? model.maskSurface : nil,
+                                                 scalpMaskDesignated:model.maskIsScalp,
                                                  displayedDepthMm:model.depthMm)
                 onOpenAR()
             }

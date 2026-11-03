@@ -1,119 +1,82 @@
-# NeuroAR Research — native iOS imaging and AR prototype
+# NeuroAR Research — MRI visualization + head-tracking experiments
 
-**Educational and software-research use only. NOT for patient care, EVD placement, clinical trajectory planning, surgery, or instrument navigation.** No accuracy or medical-device validation is claimed.
+**Research and educational software only. NOT for EVD insertion, image-guided
+surgery, clinical trajectory selection, patient care, or instrument navigation.**
+No diagnostic or registration accuracy certification is claimed.
 
-## What's in this version
+This open-source native iOS prototype combines **SwiftUI / ARKit / RealityKit**
+with a **natively linked Rust static library**, and a cross-platform Swift
+`GeometryCore`. Source: https://github.com/lizardpeter/neuroar-research
 
-### 3-D MRI visualization and GitHub → TestFlight pipeline (v0.3)
-- SceneKit now places three **actual resampled, textured MRI slice planes** in the study's physical coordinate system. The section planes move with the common crosshair and include the existing externally supplied ROI overlay.
-- New **coarse marching-tetrahedra isosurfaces** show a user-controlled image-intensity cutoff and a separately imported, matching-grid binary ROI mask. The intensity cutoff DOES NOT segment the brain, skull, ventricles, vessels, or any specific tissue; a mask's accuracy depends entirely on its source.
-- Iso-surfaces are generated off the UI thread with a bounded sampling resolution and maximum triangle count, and flagged if incomplete. They show approximate geometry only and are not appropriate for distance-to-vessel or implant-clearance measurements.
-- Three render toggles: MRI planes / scalar intensity surface / imported ROI surface. The trajectory, tip marker, and saved candidates remain in the same model-space frame.
-- Added a shared Xcode scheme, `ios-ci.yml` for macOS-runner simulator compilation and geometry tests, and **manually triggered** `testflight.yml` for signed IPA upload to TestFlight after Apple Developer setup. Setup steps for a public repository are in [`GITHUB_PUBLIC_SETUP.md`](GITHUB_PUBLIC_SETUP.md) and the detailed [`TESTFLIGHT_SETUP.md`](TESTFLIGHT_SETUP.md). These workflows have NOT run yet.
-- No connection between actual imported MRI volumes and live AR is implied. The AR view remains an unvalidated synthetic-only demonstration until image-to-physical registration is independently verified.
+## Current capabilities (v0.8 development)
 
-### Native imaging planner
-- Native SwiftUI MRI workspace with **synchronized axial, coronal, and sagittal** views. Tap any plane to update the crosshair, path entry, or target, in real-world image coordinates (millimeters).
-- **NIfTI-1 `.nii` 3-D volume reader**, little-/big-endian, scalar unsigned/signed integer and floating formats; honors `sform` or `qform` affine and spatial units. `.nii.gz`, NIfTI-2, RGB, 4-D time series, and unsupported/missing orientations are rejected explicitly.
-- **Conventional DICOM series importer**: select multiple `.dcm` Part-10 files belonging to one MR series. Supports uncompressed Explicit/Implicit VR Little Endian, single-frame MONOCHROME2 8-/16-bit grayscale, physical slice positions and orientations, pixel spacing and value scaling. Rejects JPEG/deflated, Enhanced multiframe, compressed, irregular/gapped, mixed, mosaic/unsupported image data rather than silently misaligning it. Not a complete DICOM implementation.
-- Physical-coordinate trilinear sampling and adjustable grayscale window; optional **binary ROI mask** import as matching-grid `.nii` with cyan overlay. Masks must have identical grid size and affine; independently preprocess/validate any third-party segmentations.
-- On-image R/S/A labels. **This view's rightward direction is +R, not standard radiological left-on-screen convention.** Always audit imported orientation against recognizable anatomy.
-- Research trajectory selection: manually set entry and target in MRI space, inspect projected paths, calculate line length and slider-controlled displayed depth, save candidates within the session, compare sampled intersections against a supplied ROI mask.
-- Orbitable SceneKit **3D MRI section overview** displays three orthogonal intensity slices, optional intensity-cutoff surface and optional external binary-ROI surface, plus line/markers. None represents verified skull/brain tissue, a safe route, or a validated segmentation.
-- Offline synthetic `.nii` example in `examples/synthetic-phantom.nii` plus synthetic demo mode.
+- **MRI import:** NIfTI-1 `.nii` and gzip-compressed `.nii.gz`, with bounded
+  decompression, GZIP checksum validation, original affine, spacing and intensity
+  scaling. Imports matching-grid NIfTI masks. Non-scalar, NIfTI-2, ambiguous
+  orientation and unvalidated dimensions are rejected.
+- **DICOM import:** conventional single-frame monochrome 8/16-bit Part 10 MR
+  slices with consistent geometry; native Explicit/Implicit VR Little Endian,
+  and **RLE Lossless encapsulated** pixel data. Mixed series, wrong frame
+  dimensions/spacing, irregular slice positions and unsupported transfer
+  syntaxes are rejected. **JPEG/JPEG-LS/JPEG 2000, enhanced multiframe,
+  deflated DICOM and mosaics are still unsupported.**
+- **Planning workspace:** synchronized axial/coronal/sagittal MRI slices,
+  volume windowing, matching-grid imported ROI, user-defined lines/entry/target,
+  depth slider, 3D intensity and mask previews, sampled intensity/ROI profile,
+  multiple saved candidates, manually labelled image landmarks, and annotation
+  import/export validated against a scan fingerprint.
+- **AR workspace:** LiDAR depth-based manually paired landmarks and rigid
+  registration with reserved held-out landmark check, camera tracking-state
+  loss handling, MRI-to-AR handoff, and an *optional* landmark-seeded, trimmed ICP
+  surface refinement. ICP requires an explicitly designated external scalp mask
+  and 4+ physical landmarks; its surface fit residual is **not TRE**.
+- **Moving phantom:** ARKit detects the supplied 50 mm high-contrast marker.
+  After manual registration the app can bind the MRI overlay relative to the
+  image anchor. It updates as the marker moves and automatically hides the
+  overlay when tracking is lost. This is **research marker tracking**, not
+  markerless continuous patient tracking or validated head tracking.
+- **On-device diagnostic capture:** LiDAR high-confidence sampled point cloud
+  summary against an acknowledged nonhuman phantom. Reports point count and
+  3D cloud spread, **not** accuracy. Does not upload raw point clouds or images.
+- **Rust linked into iOS:** `RustCore` exports the path distance C ABI, called
+  by the Swift UI. Its static library is built from source during Xcode builds
+  for the requested Apple architecture. Other compute kernels remain in Swift.
 
-### AR prototype (carried forward)
-- Native ARKit rear-camera tracking, RealityKit overlay, LiDAR `sceneDepth` landmark sampling, manually paired external facial landmark registration (Horn rigid fit), optionally imported USDZ mesh, path line and displayed depth.
-- Imported MRI/DICOM volumes are **not automatically associated with physical landmarks, studies, or USDZ meshes**. Only the built-in synthetic phantom exposes an explicit demonstration path-copy action between planner and AR.
-- Registration is discarded on AR session exit/tracking loss. No continuous patient-head motion tracker, independent target-registration error, or calibration confidence bounds are available.
-- No uploaded files are sent to servers in this implementation.
+## Run and build
 
-## Run the app
+1. `swift test --package-path GeometryCore` runs image, format, geometry,
+   registration, and synthetic-phantom tests on macOS or Linux with zlib.
+2. For iPhone/macOS: open `NeuroARResearch.xcodeproj` with Xcode. Install stable
+   Rust (`rustup`, `cargo`) and the target for your device/simulator; Xcode
+   invokes `scripts/build-rust-ios.sh` as a prebuild script. The iPhone must
+   support ARKit LiDAR to capture scene depth.
+3. For compressed NIfTI, import `.nii.gz` directly from Files. For DICOM,
+   select consecutive `.dcm` images from the same series. If a format is
+   unsupported, use a medically validated external converter and verify
+   orientation and spacing before visualizing.
+4. Load a mask only when its grid and affine match. A random intensity
+   isosurface is **not** an anatomically validated scalp or vessel mask.
+5. For head tracking, see [`docs/HEAD_MARKER.md`](docs/HEAD_MARKER.md).
+   Use a synthetic phantom, measure its independent landmarks, and confirm
+   no overlay remains visible when the 50 mm marker is lost.
+6. Public GitHub Actions runs macOS iOS Simulator builds; a separately
+   triggered workflow signs and uploads directly to **private TestFlight**
+   once Apple account credentials are configured. See
+   [`TESTFLIGHT_SETUP.md`](TESTFLIGHT_SETUP.md).
 
-1. On macOS, open `NeuroARResearch.xcodeproj` with Xcode 16 or newer; use iOS 18+ and choose your own developer team / bundle ID.
-2. Start on the **MRI PLANNER** tab. The default is synthetic anatomy. Tap **MRI .nii** and select `examples/synthetic-phantom.nii` if you want to test file import, or choose a 3-D anatomical `.nii` file with a valid qform/sform.
-3. For DICOM, choose **DICOM .dcm** and multi-select *all consecutive conventional slices* from **one** series. If the importer rejects the format, convert using a validated converter such as dcm2niix, verify orientation, then import `.nii`. Do not force files to load by deleting orientation metadata.
-4. Tap **Crosshair**, **Entry**, or **Target**, then tap positions on any of the three orthogonal slices. Adjust displayed path depth. Tap **Save current path** to compare candidates. Import a **matching-grid, pre-segmented ROI .nii** to show sampled path/ROI intersections.
-5. For the AR synthetic experiment, switch to **LIVE AR** on a LiDAR-capable iPhone Pro or supported iPad Pro. Use only a *stationary synthetic head phantom* with calibrated landmarks, not a person. Matching imported patient MRI with live AR is not implemented.
+## Validation and limitations
 
-## Source organization
+`docs/ACCURACY_AND_TESTING.md` describes physical-device phantom protocols,
+registration quality, motion-failure checks and the distinction between
+fitted surface error and independently measured target registration error.
 
-- `GeometryCore/Sources/GeometryCore/GeometryCore.swift`: rigid landmark registration, study and trajectory models
-- `GeometryCore/Sources/GeometryCore/MedicalImaging.swift`: voxel affine, trilinear sampling, linked view geometry, ROI intersection
-- `GeometryCore/Sources/GeometryCore/NiftiReader.swift`: NIfTI-1 parser with explicit RAS-to-canonical axis conversion
-- `GeometryCore/Sources/GeometryCore/DicomSeriesReader.swift`: narrow conventional DICOM slice-series reader with explicit LPS-to-canonical axis conversion
-- `GeometryCore/Sources/GeometryCore/SurfaceMesher.swift`: bounded research-only marching-tetrahedra surface preview, values in millimeters
-- `GeometryCore/Tests/GeometryCoreTests`: independent synthetic fixtures and numerical/format tests (15 automated tests)
-- `NeuroAR/MRIPlanningView.swift`: native 3-plane viewer, study import, candidate editing
-- `NeuroAR/TrajectorySceneView.swift`: orbitable real MRI section textures, iso-surface preview, ROI preview, bounding-box/path geometry
-- `NeuroAR/ARHeadController.swift` / `DepthUnprojector.swift`: AR registration, LiDAR point capture and RealityKit visualization
+**Not yet implemented/validated:** robust JPEG-LS/JPEG2000 or enhanced DICOM;
+validated MRI scalp/vascular/ventricular segmentation; fully markerless
+MRI-to-head registration; independent clinically relevant TRE; calibration
+correction; patient motion tracking without a marker; on-device LiDAR
+measurements; clinical device approval. No candidate route is ranked for
+anatomical safety or EVD suitability.
 
-## Coordinates and units
-
-NeuroAR's *internal canonical frame* is **X=right, Y=superior, Z=anterior**, in millimeters. This is neither typical DICOM LPS nor NIfTI RAS axis order. NIfTI RAS `(R,A,S)` is mapped to `(R,S,A)`; DICOM LPS `(L,P,S)` maps to `(-L,S,-P)`. All transforms must remain in millimeters until converted to ARKit world meters. Unit and affine handling are tested, not clinically validated. Rotating/cropping/segmenting image data externally requires preserving/recomputing its affine.
-
-The legacy study JSON uses the same canonical frame. USDZ import requires preconverted mesh coordinates in **meters** in that frame. There is no enforced MRI-study-USDZ identity check beyond the synthetic demonstration boundary; do not use those overlays with patient data.
-
-## Run tests
-
-```bash
-cd GeometryCore
-swift test
-```
-
-Tested on Linux Swift 6 with fixture-based registration, NIfTI sform/qform/big-endian, DICOM explicit/implicit little-endian, voxel sampling, slice coordinate projection, and geometric ROI sampling.
-
-The iOS source is **Swift syntax parsed**, but **this environment has no Xcode or iOS SDK**. The iOS app has **not** been compiled on iOS or verified with an iPhone. Xcode compile/runtime corrections may be needed.
-
-## Technical / clinical limitations
-
-- Imported segmentation is an externally prepared **unvalidated binary ROI mask**, not automatic ventricle, vascular, or skull segmentation. A zero-intersection result **does not prove safety**. No automatically proposed or ranked EVD trajectories.
-- SceneKit 3D now renders physical **orthogonal MRI sections** and **coarse intensity isosurfaces**; it is NOT full GPU ray-marched volume rendering or validated tissue segmentation. LiDAR head surface reconstruction/ICP, clinical-grade 3D tissue segmentation and full 3D volume ray-marching remain future milestones.
-- DICOM support is intentionally limited. A scanner-specific DICOM series, de-identified image, NIfTI affine, or image orientation may still be wrong. Visual and independent geometric validation is required.
-- No brain-shift modeling, head-motion compensation, real-time patient tracking, optical fiducials, calibration acceptance testing, or measured target registration error (TRE). ARKit tracking the *phone* is not tracking the patient's skull.
-- Landmark residual RMSE shown in AR is a *fit statistic*, never an intracranial accuracy estimate. The 15-mm registration guard in the demo is **not a medical tolerance**.
-- Real-world clinical use would require independent phantoms/ground truth, robust registration, device and software hazard analysis, human-factors testing, regulatory evaluation, and specialist oversight.
-
-### Next development milestones
-
-1. Validated label-map metadata and independently reviewed skull/scalp/ventricle/vessel segmentation (3D generic threshold preview exists, but not anatomical segmentation or verified MRI tissue rendering).
-2. Secure image-study-to-physical-head identity association, immutable audit trail, rigid surface registration and independently quantified TRE/uncertainty.
-3. Head tracking with continuous drift detection and fail-closed AR overlay, validated through independent phantom experiments.
-4. Dedicated comparison workspace and exportable research reports, subject to privacy safeguards and validation.
-
-## CI and no-cable iPhone installation
-
-The included workflows are **not yet deployed**. Follow `TESTFLIGHT_SETUP.md` to create an Apple Developer app, signing identity, provisioning profile, API key, and GitHub variables/secrets. Ordinary pushes build on a hosted Mac against iOS Simulator without signing. A manually triggered workflow can sign and upload a release to App Store Connect/TestFlight. After TestFlight processing and an invitation, installation on the iPhone works over the air. **Neither a Mac runner execution nor a TestFlight installation has been verified for this package.** Do not upload patient images or secrets to GitHub.
-
-
-## Swift + Rust architecture (next step)
-
-The first cross-platform Rust static library is in `RustCore/` with a C ABI, a native unit-test suite, and a separate macOS/iOS cross-compilation workflow. **It is not yet linked into the iOS application**; Swift remains the tested MRI imaging implementation. Native ARKit/LiDAR/SwiftUI will remain in Swift while MRI decoding, geometry, and registration may be migrated to Rust incrementally after CI passes. See `RustCore/README.md`.
-
-
-## v0.5 development milestone — explicit MRI-to-AR handoff and research plan files
-
-- MRI planner can annotate named landmarks and transfer its **current** manual line and coarse image/ROI surfaces to the AR camera after explicit research-only acknowledgment. Every transfer requires new physical landmark capture. Importing a different MRI invalidates the linked AR study.
-- Export/import versioned research annotations as JSON (no image pixels). A strict voxel and physical-grid matching check rejects an archive belonging to another scan. The voxel-derived fingerprint and user labels mean exports should **not** be treated as de-identified patient data.
-- Display a sampled MRI intensity profile and imported ROI overlap indicators along a manually drawn line; these do not identify safe trajectories or anatomical tissue.
-- See [`DEVELOPMENT_STATUS.md`](DEVELOPMENT_STATUS.md) for implementation scope, validation gaps and the next device-validation milestones.
-
-
-### LiDAR capture stability increment
-
-A new portable `DepthStatistics` module rejects low-confidence, out-of-range,
-non-finite, and inconsistent 3×3 neighborhood depth samples before a landmark
-is accepted. This improves robustness to single-pixel outliers but **does not
-calibrate the camera or establish registration/target accuracy**. Swift core tests
-cover median filtering and inconsistent-depth rejection.
-
-
-### Independent surface-landmark check (development)
-
-With four or more MRI/physical landmark correspondences, the last point is
-*excluded from rigid registration fitting* and reported separately as a held-out
-surface mismatch. That is a useful debugging diagnostic but **not intracranial
-target registration error or proof of clinical navigation accuracy**. A 30 mm
-demo-only guard rejects grossly inconsistent held-out captures. Public API
-constructors are explicitly exported across the GeometryCore / iOS module
-boundary and covered by a non-`@testable` regression test.
+Do not put patient MRIs, identifiers, Apple private keys, provisioning data,
+or signed IPAs in a public repository. TestFlight secrets belong in a GitHub
+protected environment restricted to the main release branch.

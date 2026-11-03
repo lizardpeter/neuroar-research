@@ -128,11 +128,39 @@ struct ContentView: View {
                 }
                 .buttonStyle(CompactButtonStyle())
 
+                HStack(spacing:8) {
+                    Button("Bind to visible 50 mm marker") { controller.bindToMarker() }
+                        .disabled(!controller.canBindMarker)
+                    Button("Refine scalp fit") { controller.refineScalpSurface() }
+                        .disabled(!controller.canRefineSurface)
+                }.buttonStyle(CompactButtonStyle())
+                HStack {
+                    Circle().fill(controller.markerVisible ? .green : .orange).frame(width:8,height:8)
+                    Text(controller.markerBound ? "Head marker bound · tracking \(controller.markerVisible ? "visible" : "LOST")" :
+                         "Head marker: \(controller.markerVisible ? "visible, not bound" : "not detected")")
+                        .font(.caption.monospaced())
+                }
+                Text("Physical marker must be printed at exactly 50 mm and fixed to a synthetic phantom. The overlay hides on marker loss; stationary world anchors alone cannot follow a moving head.")
+                    .font(.caption2).foregroundStyle(.orange)
+                Toggle("I am testing ONLY a nonhuman phantom/mannequin",isOn:$controller.phantomOnlyAcknowledged)
+                    .font(.caption).tint(.cyan)
+                Button("Capture LiDAR phantom diagnostics") { controller.recordPhantomDiagnostic() }
+                    .buttonStyle(CompactButtonStyle()).disabled(!controller.phantomOnlyAcknowledged)
+                if let quality=controller.lastPhantomDiagnostic {
+                    Text(String(format:"High-confidence samples: %d · spatial spread: %.1f mm · median cloud radius: %.1f mm. These are NOT accuracy metrics.",quality.sampleCount,quality.spatialSpreadMm,quality.medianRadiusMm))
+                        .font(.caption2).foregroundStyle(.cyan)
+                }
+                DisclosureGroup("Show printable marker") {
+                    Image("HeadMarker").resizable().interpolation(.none).scaledToFit().frame(width:130,height:130)
+                    Text("Print the source image at an exact 50.0 mm outer width (disable printer scaling). See docs/HEAD_MARKER.md. Not for patients or surgery.")
+                        .font(.caption2).foregroundStyle(.gray)
+                }.font(.caption)
                 if let result=controller.registration {
                     HStack(spacing:18) {
                         metric("LANDMARK FIT",String(format:"%.1f mm",result.landmarkRMSEmeters*1000))
                         metric("WORST RESIDUAL",String(format:"%.1f mm",result.maxLandmarkResidualMeters*1000))
                         metric("FIT POINTS",String(result.count))
+                        metric("SURFACE ICP",controller.surfaceFitRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not run")
                         metric("HOLD-OUT",controller.heldOutSurfaceResidualMeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not measured")
                     }
                     Text("A fourth or later landmark reserves the final surface point as an independent check. Neither fit nor held-out surface residual measures intracranial target accuracy.")
@@ -156,7 +184,7 @@ struct ContentView: View {
                         HStack {
                             Text("Displayed depth").foregroundStyle(.white)
                             Spacer()
-                            Text(String(format:"%.1f / %.1f mm",controller.depthMm,path.lengthMm))
+                            Text(String(format:"%.1f / %.1f mm",controller.depthMm,RustBridge.pathLengthMm(path)))
                                 .monospacedDigit().foregroundStyle(accent)
                         }
                         Slider(value:Binding(get:{controller.depthMm},set:{controller.setDepth($0)}),
@@ -175,7 +203,7 @@ struct ContentView: View {
                 Divider()
                 Text("Validation status").font(.caption.bold()).foregroundStyle(.orange)
                 Text(controller.plannerLinked
-                     ? "Current MRI planning study and selected coarse 3D surfaces are linked. Landmark alignment is manually fitted; image-target accuracy, movement tracking and suitability for EVD navigation have NOT been validated."
+                     ? "Current MRI planning study and selected coarse 3D surfaces are linked. Landmark fit may be refined with an explicitly labelled scalp mask. Experimental marker-based motion following needs a physical target; imaging accuracy and suitability for EVD navigation have NOT been validated."
                      : "Only the synthetic phantom or separately imported JSON/USDZ study is loaded. Open MRI Planner to explicitly transfer an MRI study and its landmarks. No automatic head registration or clinical trajectory validation.")
                     .font(.caption2).foregroundStyle(.gray)
             }

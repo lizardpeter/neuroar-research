@@ -4,7 +4,8 @@ let package = Package(
     name: "GeometryCore",
     products: [.library(name: "GeometryCore", targets: ["GeometryCore"])],
     targets: [
-        .target(name: "GeometryCore"),
-        .testTarget(name: "GeometryCoreTests", dependencies: ["GeometryCore"])
+        .systemLibrary(name: "CZlib", pkgConfig: "zlib", providers: [.apt(["zlib1g-dev"]), .brew(["zlib"])]),
+        .target(name: "GeometryCore", dependencies: ["CZlib"]),
+        .testTarget(name: "GeometryCoreTests", dependencies: ["GeometryCore"], resources: [.process("Fixtures")])
     ]
 )

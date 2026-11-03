@@ -7,7 +7,7 @@ fail=0
 while IFS= read -r -d '' path; do
   lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
   case "$lower" in
-    examples/synthetic-phantom.nii) continue;;
+    examples/synthetic-phantom.nii|geometrycore/tests/geometrycoretests/fixtures/synthetic-phantom.nii.gz) continue;;
     *.dcm|*.dicom|*.nii|*.nii.gz|*.nrrd|*.mha|*.mhd|*.raw|*.usdz|*.ipa|*.xcarchive/*|*.p12|*.p8|*.mobileprovision|*.key)
       printf 'Unexpected potentially sensitive/binary file: %s\n' "$path" >&2
       fail=1;;

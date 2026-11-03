@@ -47,6 +47,57 @@ final class DicomTests: XCTestCase {
         return Data(buffer)
     }
 
+    /// Convert a self-written uncompressed grayscale slice into a single-frame
+    /// DICOM RLE Lossless Part 10 object, independently of the decoder.
+    private func makeRLESlice(z: Double) -> Data {
+        var source=[UInt8](makeSlice(z:z))
+        let original=Array("1.2.840.10008.1.2.1".utf8)
+        let compressed=Array("1.2.840.10008.1.2.5".utf8)
+        if let uidRange=source.firstIndexOfBytes(original) {
+            source.replaceSubrange(uidRange..<(uidRange+original.count),with:compressed)
+        }
+        let pixelTag:[UInt8]=[0xE0,0x7F,0x10,0x00]
+        let start=source.firstIndexOfBytes(pixelTag)!
+        let pixels=Array(source.suffix(12))
+        let high=(0..<6).map { pixels[$0*2+1] }
+        let low=(0..<6).map { pixels[$0*2] }
+        var frame=[UInt8](repeating:0,count:64)
+        func set32(_ n:Int,_ at:Int) {
+            for i in 0..<4 { frame[at+i]=UInt8(truncatingIfNeeded:n >> (8*i)) }
+        }
+        set32(2,0); set32(64,4); set32(71,8)
+        frame += [5] + high + [5] + low
+        var end:[UInt8]=pixelTag+Array("OB".utf8)+[0,0,255,255,255,255]
+        func push16(_ value:Int) { end += [UInt8(value&255),UInt8((value>>8)&255)] }
+        func push32(_ value:Int) { for i in 0..<4 { end.append(UInt8((value>>(8*i))&255)) } }
+        push16(0xFFFE);push16(0xE000);push32(0) // empty basic offset table
+        push16(0xFFFE);push16(0xE000);push32(frame.count)
+        end += frame
+        push16(0xFFFE);push16(0xE0DD);push32(0)
+        return Data(source.prefix(start)+end)
+    }
+
+    func testRLELosslessSeriesMatchesUncompressedExactly() throws {
+        let raw=try DicomSeriesReader.load(files:[makeSlice(z:30),makeSlice(z:35)])
+        let rle=try DicomSeriesReader.load(files:[makeRLESlice(z:30),makeRLESlice(z:35)])
+        XCTAssertEqual(rle.voxels,raw.voxels)
+        XCTAssertEqual(rle.dimensions,raw.dimensions)
+        XCTAssertEqual(rle.affine.originMm,raw.affine.originMm)
+    }
+
+    func testRLERejectsTruncatedAndMismatchedSegments() throws {
+        let full=makeRLESlice(z:30)
+        XCTAssertThrowsError(try DicomSeriesReader.load(files:[full,Data(full.dropLast(9))]))
+        var bad=full
+        let bytes=[UInt8](bad)
+        // The RLE frame begins 64 bytes after its segment count; break its count.
+        let marker:[UInt8]=[2,0,0,0,64,0,0,0,71,0,0,0]
+        if let i=bytes.firstIndexOfBytes(marker) {
+            bad[i]=3
+        }
+        XCTAssertThrowsError(try DicomSeriesReader.load(files:[full,bad]))
+    }
+
     func testExplicitAndImplicitDicomSeries() throws {
         for implicit in [false,true] {
             let volume=try DicomSeriesReader.load(files:[makeSlice(z:35,implicit:implicit),
@@ -66,5 +117,15 @@ final class DicomTests: XCTestCase {
         XCTAssertThrowsError(try DicomSeriesReader.load(files:[makeSlice(z:30),makeSlice(z:35,series:"not-same")]))
         XCTAssertThrowsError(try DicomSeriesReader.load(files:[makeSlice(z:30),makeSlice(z:30)]))
         XCTAssertThrowsError(try DicomSeriesReader.load(files:[makeSlice(z:30)]))
+    }
+}
+
+private extension Array where Element == UInt8 {
+    func firstIndexOfBytes(_ needle:[UInt8])->Int? {
+        guard !needle.isEmpty,count>=needle.count else { return nil }
+        for start in 0...(count-needle.count) {
+            if self[start..<(start+needle.count)].elementsEqual(needle) { return start }
+        }
+        return nil
     }
 }

@@ -32,6 +32,14 @@ jobs:
       - name: Display toolchain
         run: xcodebuild -version && swift --version
 
+      - name: Install native Rust toolchain for iOS builds
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Test Rust core
+        run: cargo test --manifest-path RustCore/Cargo.toml --locked
+
       - name: Test cross-platform MRI geometry and importers
         run: swift test --package-path GeometryCore
 
