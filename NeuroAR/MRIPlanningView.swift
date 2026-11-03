@@ -403,42 +403,8 @@ struct MRIPlanningView: View {
                 intensityProfileCard
                 researchLandmarksCard
                 planPersistenceCard
-                VStack(alignment:.leading,spacing:9) {
-                    HStack {
-                        Text("3D MRI · RESEARCH PREVIEW").font(.caption.bold()).tracking(0.8)
-                        Spacer()
-                        Text("DRAG TO ORBIT").font(.system(size:9,design:.monospaced)).foregroundStyle(.gray)
-                    }
-                    TrajectorySceneView(volume:model.volume,revision:model.volumeRevision,
-                                        maskRevision:model.maskRevision,mask:model.mask,cursorMm:model.cursorMm,window:model.window,
-                                        tissueSurface:model.tissueSurface,maskSurface:model.maskSurface,
-                                        showSlices:model.showSlices3D,showTissue:model.showIntensity3D,
-                                        showMask:model.showROI3D,entryMm:model.entryMm,
-                                        targetMm:model.targetMm,tipMm:model.path.atDepth(model.depthMm))
-                        .frame(height:320).clipShape(RoundedRectangle(cornerRadius:9))
-                    HStack(spacing:10) {
-                        Toggle("MRI slices",isOn:$model.showSlices3D)
-                        Toggle("Intensity surface",isOn:$model.showIntensity3D)
-                    }.font(.caption)
-                    Toggle("Imported ROI surface",isOn:$model.showROI3D).font(.caption)
-                        .disabled(model.mask == nil)
-                    Toggle("This imported mask explicitly represents the external SCALP surface",isOn:$model.maskIsScalp)
-                        .font(.caption).disabled(model.mask == nil)
-                    Text("Only enable this when you have independently identified the mask as scalp. Arbitrary tissue-intensity surfaces and other ROI masks are not valid for head-surface registration.")
-                        .font(.caption2).foregroundStyle(.orange)
-                    HStack {
-                        Text("Surface intensity threshold")
-                        Spacer()
-                        Text(String(format:"%.1f",model.isoThreshold)).monospacedDigit()
-                    }.font(.caption)
-                    Slider(value:$model.isoThreshold,in:Double(model.window.lowerBound)...max(Double(model.window.lowerBound)+1,Double(model.window.upperBound)),step:1)
-                        .tint(.cyan)
-                    Button(model.surfaceBusy ? "Generating…" : "Rebuild 3D surfaces") { model.rebuildPreview() }
-                        .buttonStyle(.bordered).disabled(model.surfaceBusy)
-                    Text(model.surfaceStatus).font(.caption2.monospaced()).foregroundStyle(.cyan)
-                    Text("3D planes show resampled MRI intensities. The isosurface is an intensity cutoff, NOT a skull, brain, ventricle, or vessel segmentation. ROI geometry is a coarse display of an externally supplied mask. Neither is validated for navigation.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+                EmbeddedVolumePreview(imaging:model)
+                LegacyGeometryControls(model:model)
                 candidateCard
                 if let analysis=model.maskAnalysis {
                     VStack(alignment:.leading,spacing:6) {
