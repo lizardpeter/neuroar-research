@@ -97,3 +97,12 @@ The first cross-platform Rust static library is in `RustCore/` with a C ABI, a n
 - Export/import versioned research annotations as JSON (no image pixels). A strict voxel and physical-grid matching check rejects an archive belonging to another scan. The voxel-derived fingerprint and user labels mean exports should **not** be treated as de-identified patient data.
 - Display a sampled MRI intensity profile and imported ROI overlap indicators along a manually drawn line; these do not identify safe trajectories or anatomical tissue.
 - See [`DEVELOPMENT_STATUS.md`](DEVELOPMENT_STATUS.md) for implementation scope, validation gaps and the next device-validation milestones.
+
+
+### LiDAR capture stability increment
+
+A new portable `DepthStatistics` module rejects low-confidence, out-of-range,
+non-finite, and inconsistent 3×3 neighborhood depth samples before a landmark
+is accepted. This improves robustness to single-pixel outliers but **does not
+calibrate the camera or establish registration/target accuracy**. Swift core tests
+cover median filtering and inconsistent-depth rejection.

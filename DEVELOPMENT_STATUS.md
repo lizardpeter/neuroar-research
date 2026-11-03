@@ -9,7 +9,7 @@
 - Locally imported same-grid NIfTI binary ROI masks, 3D coarse intensity/ROI triangle previews and a sampled MRI-intensity/ROI-overlap profile along the manual line.
 - Multiple manually drawn comparison candidates and named MRI landmarks, with an explicit MRI-to-AR handoff.
 - A portable versioned JSON planning annotation format, with strict voxel/grid identity check before importing; no image pixels in the exported plan. **An exported annotation plan is not guaranteed to be de-identified:** names, geometry and the scan-derived fingerprint can be sensitive.
-- LiDAR sceneDepth capture of corresponding physical landmarks, rigid registration with residual display, and AR view of manual line and *coarse, explicitly unvalidated* surfaces. Re-linking an image clears prior AR registration. No head-motion correction or automatic MRI registration is implemented.
+- LiDAR sceneDepth capture with a bounded 3×3 confidence-filtered median neighborhood for corresponding physical landmarks, rigid registration with residual display, and AR view of manual line and *coarse, explicitly unvalidated* surfaces. Re-linking an image clears prior AR registration. No head-motion correction or automatic MRI registration is implemented.
 - GitHub Actions for Swift tests/iOS Simulator, Rust static library cross-compilation and a protected, manually triggered signed TestFlight upload. Never publish signed IPAs as public GitHub artifacts.
 
 ## Current limitations
