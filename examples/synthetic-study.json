@@ -1,0 +1,14 @@
+{
+  "id": "synthetic-education-only",
+  "title": "Synthetic anatomy (demo)",
+  "isSynthetic": true,
+  "landmarks": [
+    {"id":"nose","name":"Nose bridge","pointMm":{"x":0,"y":5,"z":90}},
+    {"id":"leftBrow","name":"Left brow","pointMm":{"x":-34,"y":12,"z":75}},
+    {"id":"rightBrow","name":"Right brow","pointMm":{"x":34,"y":12,"z":75}},
+    {"id":"chin","name":"Chin","pointMm":{"x":0,"y":-65,"z":55}}
+  ],
+  "trajectories": [
+    {"id":"sample","name":"Synthetic path (NOT EVD guidance)","entryMm":{"x":35,"y":65,"z":30},"targetMm":{"x":5,"y":0,"z":4}}
+  ]
+}

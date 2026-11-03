@@ -1,0 +1,13 @@
+[package]
+name = "neuroar-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Portable geometry primitives for NeuroAR research visualization"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1

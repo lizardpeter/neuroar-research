@@ -1,0 +1,581 @@
+import SwiftUI
+import CoreGraphics
+import UniformTypeIdentifiers
+import GeometryCore
+
+/// The imaging workspace is independent of the live AR registration. Imported
+/// scans are NOT assumed to match any previously loaded landmarks or USDZ.
+final class MRIPlanningModel: ObservableObject {
+    enum EditMode: String, CaseIterable {
+        case cursor = "Crosshair"
+        case entry = "Entry"
+        case target = "Target"
+    }
+
+    @Published private(set) var volume = VoxelVolume.syntheticDemo()
+    @Published private(set) var mask: VoxelVolume?
+    @Published private(set) var tissueSurface: PreviewSurface?
+    @Published private(set) var maskSurface: PreviewSurface?
+    @Published private(set) var surfaceStatus = "3D preview not yet generated"
+    @Published private(set) var surfaceBusy = false
+    @Published private(set) var volumeRevision = 0
+    @Published private(set) var maskRevision = 0
+    @Published var isoThreshold: Double = 95
+    @Published var showSlices3D = true
+    @Published var showIntensity3D = false
+    @Published var showROI3D = true
+    private var surfaceRequest = 0
+    @Published private(set) var cursorMm = Point3(0,0,0)
+    @Published private(set) var entryMm = Point3(30,65,32)
+    @Published private(set) var targetMm = Point3(5,0,4)
+    @Published var editMode: EditMode = .cursor
+    @Published private(set) var depthMm = 30.0
+    @Published private(set) var candidates:[StudyTrajectory]=[]
+    @Published private(set) var selectedCandidateID:String?
+    @Published private(set) var lowWindow: Float = 0
+    @Published private(set) var highWindow: Float = 200
+    @Published private(set) var loading = false
+    @Published private(set) var status = "Synthetic anatomical phantom. Import a NIfTI scan to start a study."
+
+    func saveCandidate() {
+        guard path.lengthMm>0 else { status="Set distinct entry and target points first.";return }
+        let name="Candidate \(candidates.count+1)"
+        let candidate=StudyTrajectory(id:UUID().uuidString,name:name,entryMm:entryMm,targetMm:targetMm)
+        candidates.append(candidate)
+        selectedCandidateID=candidate.id
+        status="Saved \(name) locally for geometric comparison. Not a safe-route recommendation."
+    }
+    func selectCandidate(id:String) {
+        guard let item=candidates.first(where:{$0.id==id}) else { return }
+        selectedCandidateID=id
+        entryMm=item.entryMm;targetMm=item.targetMm;depthMm=min(depthMm,path.lengthMm)
+        cursorMm=item.targetMm
+    }
+    func deleteSelectedCandidate() {
+        guard let id=selectedCandidateID else { return }
+        candidates.removeAll(where:{$0.id==id})
+        selectedCandidateID=nil
+        status="Saved candidate removed from this session."
+    }
+
+    var path: StudyTrajectory {
+        StudyTrajectory(id:"research-path",name:"Unvalidated research path",entryMm:entryMm,targetMm:targetMm)
+    }
+    var window: ClosedRange<Float> { lowWindow...max(lowWindow+0.01,highWindow) }
+    var maskAnalysis: MaskIntersection? {
+        guard let mask else { return nil }
+        return TrajectoryMaskSampler.analyze(path,mask:mask,referenceVolume:volume)
+    }
+
+    func loadDicomSeries(at urls:[URL]) {
+        guard !loading else { return }
+        guard urls.count >= 2 else { status="Select at least two DICOM image files from one series.";return }
+        loading=true
+        status="Importing selected DICOM slices locally…"
+        let accessed=urls.map { $0.startAccessingSecurityScopedResource() }
+        Task.detached(priority:.userInitiated) { [weak self] in
+            let result:Result<VoxelVolume,Error>
+            do {
+                let files=try urls.map { try Data(contentsOf:$0,options:[.mappedIfSafe]) }
+                result = .success(try DicomSeriesReader.load(files:files))
+            } catch { result = .failure(error) }
+            for (url,opened) in zip(urls,accessed) { if opened { url.stopAccessingSecurityScopedResource() } }
+            await MainActor.run {
+                guard let self else { return }
+                self.loading=false
+                switch result {
+                case .success(let volume): self.replaceImage(with:volume)
+                case .failure(let error): self.status="DICOM import failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func replaceImage(with loaded:VoxelVolume) {
+        candidates=[];selectedCandidateID=nil
+        volume=loaded
+        mask=nil
+        maskRevision += 1
+        cursorMm=loaded.bounds.center
+        entryMm=loaded.bounds.center
+        targetMm=loaded.bounds.center
+        depthMm=0
+        let w=loaded.defaultWindow()
+        lowWindow=w.lowerBound
+        highWindow=w.upperBound
+        volumeRevision += 1
+        isoThreshold=Double((w.lowerBound+w.upperBound)*0.5)
+        rebuildPreview()
+        status="Image loaded in MRI coordinates. Define entry/target manually; it has NOT been registered to a physical head."
+    }
+
+    func loadVolume(at url: URL, asMask: Bool) {
+        guard !loading else { return }
+        loading=true
+        status="Reading \(asMask ? "segmentation mask" : "MRI volume") locally…"
+        let access=url.startAccessingSecurityScopedResource()
+        // Security scope must stay active through the actual file read.
+        Task.detached(priority:.userInitiated) { [weak self] in
+            let result: Result<VoxelVolume,Error>
+            do {
+                guard url.pathExtension.lowercased()=="nii" else {
+                    throw ImagingError.unsupported("select an uncompressed .nii file; decompress .nii.gz before import")
+                }
+                let data=try Data(contentsOf:url,options:[.mappedIfSafe])
+                let v=try NiftiReader.load(data)
+                result = .success(v)
+            } catch { result = .failure(error) }
+            if access { url.stopAccessingSecurityScopedResource() }
+            await MainActor.run {
+                guard let self else { return }
+                self.loading=false
+                switch result {
+                case .failure(let error): self.status="Import failed: \(error.localizedDescription)"
+                case .success(let loaded):
+                    if asMask {
+                        guard loaded.dimensions == self.volume.dimensions,
+                              self.affineMatches(loaded.affine, self.volume.affine) else {
+                            self.status="Mask rejected: require identical voxel grid and physical affine. Resample externally first."
+                            return
+                        }
+                        self.mask=loaded
+                        self.maskRevision += 1
+                        self.rebuildPreview()
+                        self.status="ROI segmentation loaded. Overlap is NOT a surgical safety or vessel-clearance measure."
+                    } else {
+                        self.replaceImage(with:loaded)
+                    }
+                }
+            }
+        }
+    }
+
+    private func affineMatches(_ a:VoxelAffine,_ b:VoxelAffine)->Bool {
+        for (u,v) in zip([a.originMm,a.iMm,a.jMm,a.kMm],[b.originMm,b.iMm,b.jMm,b.kMm]) {
+            if (u-v).norm > 0.0001 { return false }
+        }
+        return true
+    }
+
+    func resetDemo() {
+        volume=VoxelVolume.syntheticDemo();mask=nil;maskRevision += 1;cursorMm=Point3(0,0,0)
+        candidates=[];selectedCandidateID=nil
+        entryMm=Point3(30,65,32);targetMm=Point3(5,0,4)
+        lowWindow=0;highWindow=200;depthMm=30
+        isoThreshold=95
+        volumeRevision += 1
+        rebuildPreview()
+        status="Synthetic demo restored. It is not an MRI or a recommended neurosurgical route."
+    }
+
+    /// Builds coarse render-only surfaces from scalar cutoffs. No label or intensity threshold
+    /// is treated as a clinically meaningful anatomical segmentation.
+    func rebuildPreview() {
+        surfaceRequest += 1
+        let request=surfaceRequest
+        let image=volume
+        let roi=mask
+        let threshold=Float(isoThreshold)
+        tissueSurface=nil
+        maskSurface=nil
+        surfaceBusy=true
+        surfaceStatus="Generating coarse, unvalidated 3D preview…"
+        Task.detached(priority:.userInitiated) { [weak self] in
+            let tissue=PreviewSurfaceMesher.extract(volume:image,threshold:threshold,
+                                                     maxCells:100_000,maxTriangles:50_000)
+            let region=roi.map { PreviewSurfaceMesher.extract(volume:$0,threshold:0.5,
+                                                              maxCells:100_000,maxTriangles:50_000) }
+            await MainActor.run {
+                guard let self, self.surfaceRequest == request else { return }
+                self.tissueSurface=tissue
+                self.maskSurface=region
+                self.surfaceBusy=false
+                let count=tissue.triangleCount
+                let maskCount=region?.triangleCount ?? 0
+                let warning=(tissue.truncated || region?.truncated == true) ? " · TRIANGLE LIMIT REACHED (incomplete)" : ""
+                self.surfaceStatus="Intensity preview: \(count) triangles; ROI: \(maskCount) triangles; stride \(tissue.samplingStepVoxels) voxel(s)\(warning)"
+            }
+        }
+    }
+
+    func setWindowLow(_ v:Double) { lowWindow=Float(min(v,Double(highWindow)-0.01)) }
+    func setWindowHigh(_ v:Double) { highWindow=Float(max(v,Double(lowWindow)+0.01)) }
+    func setDepth(_ v:Double) { depthMm=max(0,min(v,path.lengthMm)) }
+
+    func updatePosition(_ point:Point3, type:EditMode?=nil) {
+        guard point.allFinite,volume.nearest(at:point) != nil else {
+            status="Selected location is outside the imported volume."
+            return
+        }
+        switch type ?? editMode {
+        case .cursor: cursorMm=point
+        case .entry: entryMm=point; cursorMm=point
+        case .target: targetMm=point;cursorMm=point
+        }
+        depthMm=min(depthMm,path.lengthMm)
+        if (type ?? editMode) != .cursor { selectedCandidateID=nil }
+    }
+
+    func setAxis(_ axis:Int, value:Double) {
+        guard (0..<3).contains(axis) else { return }
+        var p:Point3
+        switch editMode {
+        case .cursor: p=cursorMm
+        case .entry: p=entryMm
+        case .target: p=targetMm
+        }
+        p[axis]=value
+        updatePosition(p)
+    }
+}
+
+struct MRIPlanningView: View {
+    @ObservedObject var model:MRIPlanningModel
+    @ObservedObject var arController:ARHeadController
+    @State private var importingVolume=false
+    @State private var importingMask=false
+    @State private var importingDICOM=false
+    @State private var showAdvanced=false
+
+    private let accent=Color(red:0.22,green:0.84,blue:0.92)
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:16) {
+                header
+                importButtons
+                Text(model.status).font(.caption).foregroundStyle(.cyan)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+
+                HStack(alignment:.top,spacing:12) {
+                    metric("IMAGE GRID",model.volume.dimensions.map(String.init).joined(separator:" × "))
+                    metric("COORDINATES","R / S / A · mm")
+                    metric("SOURCE",model.volume.description)
+                }
+                Picker("Slice editing",selection:$model.editMode) {
+                    ForEach(MRIPlanningModel.EditMode.allCases,id:\.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .tint(accent)
+
+                LazyVGrid(columns:[GridItem(.flexible(),spacing:10),GridItem(.flexible(),spacing:10)],spacing:12) {
+                    ForEach(ImagingPlane.allCases,id:\.self) { plane in
+                        SliceTile(model:model,plane:plane)
+                    }
+                }
+                Text("Tap a slice to place the selected crosshair, entry, or target. All planes share the same physical millimeter coordinates. Image orientation is research-only and must be verified against source landmarks.")
+                    .font(.caption2).foregroundStyle(.secondary)
+
+                trajectoryCard
+                depthCard
+                VStack(alignment:.leading,spacing:9) {
+                    HStack {
+                        Text("3D MRI · RESEARCH PREVIEW").font(.caption.bold()).tracking(0.8)
+                        Spacer()
+                        Text("DRAG TO ORBIT").font(.system(size:9,design:.monospaced)).foregroundStyle(.gray)
+                    }
+                    TrajectorySceneView(volume:model.volume,revision:model.volumeRevision,
+                                        maskRevision:model.maskRevision,mask:model.mask,cursorMm:model.cursorMm,window:model.window,
+                                        tissueSurface:model.tissueSurface,maskSurface:model.maskSurface,
+                                        showSlices:model.showSlices3D,showTissue:model.showIntensity3D,
+                                        showMask:model.showROI3D,entryMm:model.entryMm,
+                                        targetMm:model.targetMm,tipMm:model.path.atDepth(model.depthMm))
+                        .frame(height:320).clipShape(RoundedRectangle(cornerRadius:9))
+                    HStack(spacing:10) {
+                        Toggle("MRI slices",isOn:$model.showSlices3D)
+                        Toggle("Intensity surface",isOn:$model.showIntensity3D)
+                    }.font(.caption)
+                    Toggle("Imported ROI surface",isOn:$model.showROI3D).font(.caption)
+                        .disabled(model.mask == nil)
+                    HStack {
+                        Text("Surface intensity threshold")
+                        Spacer()
+                        Text(String(format:"%.1f",model.isoThreshold)).monospacedDigit()
+                    }.font(.caption)
+                    Slider(value:$model.isoThreshold,in:Double(model.window.lowerBound)...max(Double(model.window.lowerBound)+1,Double(model.window.upperBound)),step:1)
+                        .tint(.cyan)
+                    Button(model.surfaceBusy ? "Generating…" : "Rebuild 3D surfaces") { model.rebuildPreview() }
+                        .buttonStyle(.bordered).disabled(model.surfaceBusy)
+                    Text(model.surfaceStatus).font(.caption2.monospaced()).foregroundStyle(.cyan)
+                    Text("3D planes show resampled MRI intensities. The isosurface is an intensity cutoff, NOT a skull, brain, ventricle, or vessel segmentation. ROI geometry is a coarse display of an externally supplied mask. Neither is validated for navigation.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                candidateCard
+                if let analysis=model.maskAnalysis {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text("SEGMENTATION OVERLAP (UNVALIDATED)").font(.caption.bold())
+                        Text("\(analysis.pointsInsideMask) of \(analysis.sampledPoints) sampled path points overlap the ROI mask.")
+                        if let d=analysis.firstIntersectionDepthMm {
+                            Text(String(format:"First sampled overlap at %.1f mm",d))
+                        }
+                        if analysis.anyOutOfVolume {
+                            Label("Parts of the path are outside the MRI volume",systemImage:"exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                        }
+                        Text("A zero-overlap result does not mean a route is safe, collision-free, or anatomically appropriate.")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+                    .padding(12).background(Color.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
+                }
+                DisclosureGroup("Image contrast and coordinates",isExpanded:$showAdvanced) {
+                    VStack(spacing:10) {
+                        HStack {
+                            Text("Window low"); Spacer()
+                            Text(String(format:"%.0f",model.lowWindow)).monospacedDigit()
+                        }
+                        Slider(value:Binding(get:{Double(model.lowWindow)},set:{model.setWindowLow($0)}),
+                               in:-2000...4000,step:5).tint(accent)
+                        HStack {
+                            Text("Window high");Spacer()
+                            Text(String(format:"%.0f",model.highWindow)).monospacedDigit()
+                        }
+                        Slider(value:Binding(get:{Double(model.highWindow)},set:{model.setWindowHigh($0)}),
+                               in:-2000...4000,step:5).tint(accent)
+                        ForEach(0..<3,id:\.self) { axis in
+                            HStack {
+                                Text(["X · right","Y · superior","Z · anterior"][axis])
+                                Spacer()
+                                let selected = selectedPosition
+                                Text(String(format:"%.1f mm",selected[axis])).monospacedDigit()
+                                Stepper("",value:Binding(get:{selected[axis]},set:{model.setAxis(axis,value:$0)}),
+                                        in:(model.volume.bounds.minimum[axis])...(model.volume.bounds.maximum[axis]),
+                                        step:1).labelsHidden()
+                            }
+                        }
+                    }.font(.caption).padding(.top,8)
+                }.tint(accent)
+
+                Text("RESEARCH / EDUCATION ONLY. Not for patient care, EVD placement, operative planning, or instrument navigation. Registration uncertainty, patient motion, vessels, and image distortion are not validated.")
+                    .font(.caption2.bold()).foregroundStyle(.orange)
+                    .padding(12).frame(maxWidth:.infinity,alignment:.leading)
+                    .background(Color.orange.opacity(0.09),in:RoundedRectangle(cornerRadius:12))
+            }
+            .padding(15)
+        }
+        .onAppear {
+            if model.tissueSurface == nil && !model.surfaceBusy { model.rebuildPreview() }
+        }
+        .fileImporter(isPresented:$importingVolume,
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data]) { result in
+            if case let .success(url)=result { model.loadVolume(at:url,asMask:false) }
+        }
+        .fileImporter(isPresented:$importingMask,
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data]) { result in
+            if case let .success(url)=result { model.loadVolume(at:url,asMask:true) }
+        }
+        .fileImporter(isPresented:$importingDICOM,
+                      allowedContentTypes:[UTType(filenameExtension:"dcm") ?? .data],
+                      allowsMultipleSelection:true) { result in
+            if case let .success(urls)=result { model.loadDicomSeries(at:urls) }
+        }
+    }
+
+    private var selectedPosition: Point3 {
+        switch model.editMode {
+        case .cursor: model.cursorMm
+        case .entry: model.entryMm
+        case .target: model.targetMm
+        }
+    }
+
+    private var header:some View {
+        VStack(alignment:.leading,spacing:5) {
+            Text("MRI · MULTIPLANAR WORKSPACE").font(.system(.headline,design:.rounded)).tracking(1)
+            Text("Linked anatomical views + manual research trajectories")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var importButtons:some View {
+        HStack(spacing:8) {
+            Button("MRI .nii") { importingVolume=true }
+            Button("DICOM .dcm") { importingDICOM=true }
+            Button("ROI mask") { importingMask=true }
+            Button("Demo") { model.resetDemo() }
+        }
+        .buttonStyle(CompactButtonStyle())
+        .disabled(model.loading)
+    }
+
+    private var trajectoryCard:some View {
+        VStack(alignment:.leading,spacing:9) {
+            Text("RESEARCH TRAJECTORY").font(.caption.bold()).tracking(0.8)
+            HStack {
+                VStack(alignment:.leading,spacing:5) {
+                    Text("Entry (orange)").foregroundStyle(.orange)
+                    Text(formatPoint(model.entryMm)).font(.caption.monospacedDigit())
+                }
+                Spacer()
+                VStack(alignment:.trailing,spacing:5) {
+                    Text("Target (purple)").foregroundStyle(.purple)
+                    Text(formatPoint(model.targetMm)).font(.caption.monospacedDigit())
+                }
+            }
+            HStack {
+                Text("Geometric path length")
+                Spacer()
+                Text(String(format:"%.1f mm",model.path.lengthMm))
+                    .font(.headline.monospacedDigit()).foregroundStyle(accent)
+            }
+            if model.volume.isSynthetic {
+                Button("Copy demo path into synthetic AR study") {
+                    for axis in 0..<3 {
+                        arController.setCoordinate(entry:true,axis:axis,value:model.entryMm[axis])
+                        arController.setCoordinate(entry:false,axis:axis,value:model.targetMm[axis])
+                    }
+                    arController.setDepth(model.depthMm)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!arController.study.isSynthetic)
+                Text("Only available for the built-in synthetic phantom. Imported MRI coordinates are never silently linked to an AR study.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12).background(Color.white.opacity(0.06),in:RoundedRectangle(cornerRadius:12))
+    }
+
+    private var candidateCard:some View {
+        VStack(alignment:.leading,spacing:10) {
+            HStack {
+                Text("SAVED COMPARISON CANDIDATES").font(.caption.bold()).tracking(0.8)
+                Spacer()
+                Button("Save current path") { model.saveCandidate() }.buttonStyle(.bordered)
+            }
+            ForEach(model.candidates) { candidate in
+                HStack(spacing:10) {
+                    Button(candidate.name) { model.selectCandidate(id:candidate.id) }
+                        .tint(model.selectedCandidateID==candidate.id ? .cyan : .white)
+                    Spacer()
+                    Text(String(format:"%.1f mm",candidate.lengthMm)).font(.caption.monospacedDigit())
+                    if let mask=model.mask {
+                        let result=TrajectoryMaskSampler.analyze(candidate,mask:mask,referenceVolume:model.volume)
+                        Text("ROI \(result.pointsInsideMask)/\(result.sampledPoints)")
+                            .font(.system(size:10,design:.monospaced)).foregroundStyle(.orange)
+                    }
+                }
+            }
+            if model.candidates.isEmpty {
+                Text("Save multiple manually drawn lines to compare lengths and sampled ROI intersections. No routes are generated or ranked for safety.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            if model.selectedCandidateID != nil {
+                Button("Remove selected candidate",role:.destructive) { model.deleteSelectedCandidate() }
+                    .font(.caption)
+            }
+        }
+        .padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+    }
+
+    private var depthCard:some View {
+        VStack(alignment:.leading,spacing:6) {
+            HStack {
+                Text("Displayed insertion depth · illustration")
+                Spacer()
+                Text(String(format:"%.1f / %.1f mm",model.depthMm,model.path.lengthMm))
+                    .font(.caption.monospacedDigit()).foregroundStyle(accent)
+            }
+            Slider(value:Binding(get:{model.depthMm},set:{model.setDepth($0)}),
+                   in:0...max(1,model.path.lengthMm),step:0.5)
+                .tint(.yellow)
+            Text("Yellow marker = depth along the selected line; NOT measured insertion distance in a patient.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func metric(_ name:String,_ value:String)->some View {
+        VStack(alignment:.leading,spacing:4) {
+            Text(name).font(.system(size:9,weight:.bold,design:.monospaced)).foregroundStyle(.gray)
+            Text(value).font(.system(size:11,weight:.semibold,design:.monospaced)).lineLimit(2)
+        }.frame(maxWidth:.infinity,alignment:.leading)
+    }
+
+    private func formatPoint(_ p:Point3)->String {
+        String(format:"%.1f, %.1f, %.1f mm",p.x,p.y,p.z)
+    }
+}
+
+private struct SliceTile: View {
+    @ObservedObject var model:MRIPlanningModel
+    let plane:ImagingPlane
+
+    var body:some View {
+        let raster=SliceRenderer.render(volume:model.volume,mask:model.mask,plane:plane,
+                                        cursor:model.cursorMm,window:model.window,width:176,height:176)
+        let frame=raster.frame
+        VStack(spacing:6) {
+            HStack {
+                Text(plane.rawValue.uppercased()).font(.system(size:10,weight:.bold,design:.monospaced))
+                Spacer()
+                Text(String(format:"%.0f mm",model.cursorMm[plane.fixedAxis]))
+                    .font(.system(size:10,design:.monospaced)).foregroundStyle(.gray)
+            }
+            GeometryReader { geometry in
+                ZStack {
+                    if let image=makeCGImage(raster) {
+                        Image(decorative:image,scale:1)
+                            .resizable().interpolation(.none)
+                    } else { Color.black }
+                    // These landmarks are projections. They are NOT necessarily on this slice.
+                    Path { path in
+                        let c=frame.uv(for:model.cursorMm)
+                        let x=c.u*geometry.size.width, y=c.v*geometry.size.height
+                        path.move(to:CGPoint(x:x,y:0));path.addLine(to:CGPoint(x:x,y:geometry.size.height))
+                        path.move(to:CGPoint(x:0,y:y));path.addLine(to:CGPoint(x:geometry.size.width,y:y))
+                    }.stroke(.cyan.opacity(0.65),lineWidth:0.6).allowsHitTesting(false)
+                    projectedPath(frame:frame,size:geometry.size)
+                    marker(point:model.entryMm,color:.orange,letter:"E",frame:frame,size:geometry.size)
+                    marker(point:model.targetMm,color:.purple,letter:"T",frame:frame,size:geometry.size)
+                    marker(point:model.path.atDepth(model.depthMm),color:.yellow,letter:"",frame:frame,size:geometry.size)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance:0).onEnded { value in
+                    let x=min(1,max(0,value.location.x/max(1,geometry.size.width)))
+                    let y=min(1,max(0,value.location.y/max(1,geometry.size.height)))
+                    model.updatePosition(frame.world(u:x,v:y))
+                })
+            }
+            .aspectRatio(1,contentMode:.fit)
+            .clipShape(RoundedRectangle(cornerRadius:6))
+            Text(plane == .axial ? "A ↑  ·  R →" : (plane == .coronal ? "S ↑  ·  R →" : "S ↑  ·  A →"))
+                .font(.system(size:9,weight:.medium,design:.monospaced)).foregroundStyle(.cyan.opacity(0.8))
+            Text("Projected markers · not depth-verified")
+                .font(.system(size:8,design:.monospaced)).foregroundStyle(.gray)
+        }
+        .padding(9).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:11))
+    }
+
+    private func projectedPath(frame:SliceFrame,size:CGSize)->some View {
+        let a=frame.uv(for:model.entryMm), b=frame.uv(for:model.targetMm)
+        return Path { path in
+            path.move(to:CGPoint(x:a.u*size.width,y:a.v*size.height))
+            path.addLine(to:CGPoint(x:b.u*size.width,y:b.v*size.height))
+        }.stroke(.yellow.opacity(0.8),style:StrokeStyle(lineWidth:1.2,dash:[5,3]))
+            .allowsHitTesting(false)
+    }
+
+    private func marker(point:Point3,color:Color,letter:String,frame:SliceFrame,size:CGSize)->some View {
+        let uv=frame.uv(for:point)
+        return ZStack {
+            Circle().fill(color).frame(width:9,height:9)
+                .overlay(Circle().stroke(.black,lineWidth:1))
+            if !letter.isEmpty {
+                Text(letter).font(.system(size:9,weight:.heavy,design:.monospaced))
+                    .foregroundStyle(color)
+                    .offset(x:10,y:-9)
+            }
+        }
+        .position(x:uv.u*size.width,y:uv.v*size.height)
+        .allowsHitTesting(false)
+    }
+
+    private func makeCGImage(_ raster:SliceRaster)->CGImage? {
+        let data=Data(raster.rgba) as CFData
+        guard let provider=CGDataProvider(data:data) else { return nil }
+        return CGImage(width:raster.width,height:raster.height,bitsPerComponent:8,bitsPerPixel:32,
+                       bytesPerRow:raster.width*4,space:CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider:provider,decode:nil,shouldInterpolate:false,intent:.defaultIntent)
+    }
+}
