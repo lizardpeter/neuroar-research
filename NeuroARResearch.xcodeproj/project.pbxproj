@@ -18,6 +18,9 @@
         ED5515BE9EC5C2E8DC76B514 /* GeometryCore in Frameworks */ = {isa = PBXBuildFile; productRef = E55A8CC6397119BC2F346606 /* GeometryCore */; };
         A7F2BC890000000000000001 /* DemoARWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F2BC890000000000000002 /* DemoARWorkspace.swift */; };
         A7F2BC890000000000000003 /* DemoDatasetLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */; };
+        AF7000000000000000000001 /* MedicalVolumeRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7000000000000000000002 /* MedicalVolumeRenderer.swift */; };
+        AF7000000000000000000003 /* VisionHandInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF7000000000000000000004 /* VisionHandInput.swift */; };
+        AF7000000000000000000005 /* VolumeRaymarch.metal in Sources */ = {isa = PBXBuildFile; fileRef = AF7000000000000000000006 /* VolumeRaymarch.metal */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
         90A9B1A94224100300010002 /* NaturalHeadTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaturalHeadTracker.swift; sourceTree = "<group>"; };
@@ -33,6 +36,9 @@
         6D795F13C8C22E022040EE00 /* NeuroARResearch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NeuroARResearch.app; sourceTree = BUILT_PRODUCTS_DIR; };
         A7F2BC890000000000000002 /* DemoARWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoARWorkspace.swift; sourceTree = "<group>"; };
         A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoDatasetLibrary.swift; sourceTree = "<group>"; };
+        AF7000000000000000000002 /* MedicalVolumeRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MedicalVolumeRenderer.swift; sourceTree = "<group>"; };
+        AF7000000000000000000004 /* VisionHandInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionHandInput.swift; sourceTree = "<group>"; };
+        AF7000000000000000000006 /* VolumeRaymarch.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = VolumeRaymarch.metal; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXFrameworksBuildPhase section */
         7561BFB015D8F536760CB671 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (ED5515BE9EC5C2E8DC76B514 /* GeometryCore in Frameworks */, ); runOnlyForDeploymentPostprocessing = 0; };
@@ -40,6 +46,9 @@
 /* Begin PBXGroup section */
         EDA6D6223944636B9C5B54AA = {isa = PBXGroup; children = (E54ED815E4F7D7A7177E9F81 /* NeuroAR */, BFE00B156DCFC34C4751A6E5 /* Products */, ); sourceTree = "<group>"; };
         E54ED815E4F7D7A7177E9F81 /* NeuroAR */ = {isa = PBXGroup; children = (
+            AF7000000000000000000002 /* MedicalVolumeRenderer.swift */,
+            AF7000000000000000000004 /* VisionHandInput.swift */,
+            AF7000000000000000000006 /* VolumeRaymarch.metal */,
             A7F2BC890000000000000002 /* DemoARWorkspace.swift */,
             A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */,
             91FFB074A988279CDEC0BC56 /* NeuroARApp.swift */,
@@ -80,6 +89,9 @@
 /* End PBXShellScriptBuildPhase section */
 /* Begin PBXSourcesBuildPhase section */
         BCE16DD0260827ECF338C787 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+            AF7000000000000000000001 /* MedicalVolumeRenderer.swift in Sources */,
+            AF7000000000000000000003 /* VisionHandInput.swift in Sources */,
+            AF7000000000000000000005 /* VolumeRaymarch.metal in Sources */,
             A7F2BC890000000000000001 /* DemoARWorkspace.swift in Sources */,
             A7F2BC890000000000000003 /* DemoDatasetLibrary.swift in Sources */,
             E34777DEBF7BA5D8E5CDEFEA /* NeuroARApp.swift in Sources */,
