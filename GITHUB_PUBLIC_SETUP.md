@@ -12,9 +12,9 @@ Follow the current [TestFlight setup guide](TESTFLIGHT_SETUP.md) rather than the
 - Environment secret: `APPSTORE_API_PRIVATE_KEY` (full private `.p8` key)
 - Environment variables: `APPSTORE_API_KEY_ID`, `APPSTORE_ISSUER_ID`
 - Team ID environment variable: `APPLE_TEAM_ID` **still required** (10 characters)
-- Bundle ID environment variable: `APPSTORE_BUNDLE_ID` **optional** if using default `com.lizardpeter.neuroar.research`
+- Bundle ID environment variable: `APPSTORE_BUNDLE_ID` **optional** if using default `com.pg.neuroar.research`
 
-A matching **registered Apple App ID and App Store Connect app record** must exist before upload. The workflow checks the app record via a read-only Apple API request. You can create the app record from a browser; Apple does not currently expose an ordinary App Store Connect REST endpoint to create app records.
+Find the 10-character Team ID at [Apple Developer → Account → Membership details](https://developer.apple.com/account/), not in App Store Connect's API Keys area. Do not confuse the Team ID with the API key ID or Issuer ID. A matching **registered Apple App ID and App Store Connect app record** for `com.pg.neuroar.research` must exist before upload. The workflow checks the app record via a read-only Apple API request. You can create the app record from a browser; Apple does not currently expose an ordinary App Store Connect REST endpoint to create app records.
 
 The TestFlight workflow signs using Apple's cloud service if permitted by your team/API key; no signing material is uploaded as a public GitHub artifact. A Team API key with the App Manager role may lack cloud signing privileges, so actual Apple signing must be verified before calling this fully deployed.
 

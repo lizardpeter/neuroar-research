@@ -21,7 +21,7 @@ jobs:
     env:
       APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
       APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
-      APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID || 'com.lizardpeter.neuroar.research' }}
+      APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID || 'com.pg.neuroar.research' }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
 
     steps:

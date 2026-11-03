@@ -22,7 +22,7 @@ targets:
       - package: GeometryCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.neuroar.research.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.pg.neuroar.research
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         LIBRARY_SEARCH_PATHS:
           - '$(inherited)'

@@ -12,13 +12,17 @@ The GitHub `testflight` environment has already been created and restricted to `
 
 Do not paste the key into an issue, commit, chat, or workflow YAML.
 
+## Finding the Apple Developer Team ID
+
+Open https://developer.apple.com/account/ (not the App Store Connect Users and Access page), then select **Membership details** on the account landing page. Apple lists your 10-character **Team ID** there alongside your membership information. This is **not** the App Store Connect API Key ID or Issuer ID. Add it as a GitHub `testflight` environment **variable** called `APPLE_TEAM_ID` (not a secret). If Membership details is absent, check whether the purchase has fully activated and the signed-in account is the Account Holder. Apple's help: https://developer.apple.com/help/glossary/team-id/
+
 ## Remaining Apple setup — no Mac needed
 
 1. **Add the Apple Team ID.** In [Apple Developer account](https://developer.apple.com/account/), find your **10-character Team ID** (Membership details). In [GitHub testflight environment](https://github.com/lizardpeter/neuroar-research/settings/environments), add **Environment variable** `APPLE_TEAM_ID` (not a secret). Do not substitute the API Issuer ID.
 2. **Register the explicit App ID and App Store Connect app record**, if not already created:
-   - [Apple Developer identifiers](https://developer.apple.com/account/resources/identifiers/list): register the iOS App ID `com.lizardpeter.neuroar.research`.
+   - [Apple Developer identifiers](https://developer.apple.com/account/resources/identifiers/list): register the iOS App ID `com.pg.neuroar.research`.
    - [App Store Connect Apps](https://appstoreconnect.apple.com/): create **NeuroAR Research** using that same bundle ID (the app can remain unreleased). The first build cannot be uploaded without an app record.
-   - If you chose a different bundle ID in Apple, set GitHub **Environment variable** `APPSTORE_BUNDLE_ID` to your exact identifier. Otherwise the workflow defaults to `com.lizardpeter.neuroar.research`.
+   - If you chose a different bundle ID in Apple, set GitHub **Environment variable** `APPSTORE_BUNDLE_ID` to your exact identifier. Otherwise the workflow defaults to `com.pg.neuroar.research`.
 3. Open [GitHub Actions / TestFlight](https://github.com/lizardpeter/neuroar-research/actions/workflows/testflight.yml), choose **Run workflow** on `main`, and approve the environment deployment if GitHub asks.
 4. Once Apple finishes processing, set up an **internal TestFlight group** in App Store Connect and add yourself (your Apple Account needs an appropriate team role). Install using Apple's TestFlight iPhone app.
 
