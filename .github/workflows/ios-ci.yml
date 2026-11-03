@@ -35,7 +35,7 @@ jobs:
       - name: Install native Rust toolchain for iOS builds
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - name: Test Rust core
         run: cargo test --manifest-path RustCore/Cargo.toml --locked
@@ -68,10 +68,29 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build | tee "$RUNNER_TEMP/ios-simulator-build.log"
 
+      - name: Archive unsigned iPhone application for distribution-metadata validation
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project NeuroARResearch.xcodeproj \
+            -scheme NeuroARResearch \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath .build/CI-NeuroARResearch.xcarchive \
+            -derivedDataPath .build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            archive | tee "$RUNNER_TEMP/ios-device-archive.log"
+
+      - name: Validate archived iPhone app metadata
+        run: python3 scripts/validate-ios-bundle.py .build/CI-NeuroARResearch.xcarchive/Products/Applications/NeuroARResearch.app com.pg.neuroar.research
+
       - name: Attach build log if compilation fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ios-simulator-build-log
-          path: ${{ runner.temp }}/ios-simulator-build.log
+          path: |
+            ${{ runner.temp }}/ios-simulator-build.log
+            ${{ runner.temp }}/ios-device-archive.log
           if-no-files-found: ignore
