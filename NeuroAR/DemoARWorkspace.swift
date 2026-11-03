@@ -12,6 +12,7 @@ struct DemoARCanvas: UIViewRepresentable {
     @ObservedObject var imaging: MRIPlanningModel
     @Binding var handControlEnabled: Bool
     @Binding var gestureStatus: String
+    var active: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -27,13 +28,7 @@ struct DemoARCanvas: UIViewRepresentable {
         view.scene.rootNode.addChildNode(context.coordinator.model)
         context.coordinator.installTouchGestures(on: view)
         context.coordinator.refreshScene()
-        if ARWorldTrackingConfiguration.isSupported {
-            let config = ARWorldTrackingConfiguration()
-            config.worldAlignment = .gravity
-            view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        } else {
-            context.coordinator.report("AR world tracking is unavailable on this device.")
-        }
+        context.coordinator.updateSessionIfNeeded()
         return view
     }
 
@@ -47,6 +42,7 @@ struct DemoARCanvas: UIViewRepresentable {
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.refreshSceneIfNeeded()
+        context.coordinator.updateSessionIfNeeded()
     }
 
     final class Coordinator: NSObject, ARSessionDelegate, UIGestureRecognizerDelegate {
@@ -59,6 +55,7 @@ struct DemoARCanvas: UIViewRepresentable {
         private var lastRevision = -1
         private var lastSliceKey = ""
         private var placed = false
+        private var sessionActive = false
         private var oneHand: CGPoint?
         private var twoHands: (center: CGPoint, length: CGFloat, angle: CGFloat)?
         private var statusText = ""
@@ -75,6 +72,26 @@ struct DemoARCanvas: UIViewRepresentable {
             parent.gestureStatus = message
         }
 
+        func updateSessionIfNeeded() {
+            guard let view else { return }
+            if parent.active && !sessionActive {
+                guard ARWorldTrackingConfiguration.isSupported else {
+                    report("AR world tracking is unavailable on this device.")
+                    return
+                }
+                let config = ARWorldTrackingConfiguration()
+                config.worldAlignment = .gravity
+                view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+                sessionActive = true
+                placed = false
+            } else if !parent.active && sessionActive {
+                view.session.pause()
+                sessionActive = false
+                resetHandBaseline()
+                placed = false
+            }
+        }
+
         func resetHandBaseline() {
             oneHand = nil
             twoHands = nil
@@ -88,11 +105,11 @@ struct DemoARCanvas: UIViewRepresentable {
                 model.simdPosition = eye + forward * 0.65
                 placed = true
             }
-            guard parent.handControlEnabled else {
+            guard parent.active, parent.handControlEnabled else {
                 resetHandBaseline()
                 return
             }
-            guard frame.camera.trackingState == .normal else {
+            guard case .normal = frame.camera.trackingState else {
                 resetHandBaseline()
                 report("AR tracking limited. Hold the phone steady; hand controls paused.")
                 return
@@ -129,7 +146,7 @@ struct DemoARCanvas: UIViewRepresentable {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.processingHand = false
-                    guard self.parent.handControlEnabled, self.view != nil else { return }
+                    guard self.parent.active, self.parent.handControlEnabled, self.view != nil else { return }
                     self.interpretHands(found)
                 }
             }
@@ -359,6 +376,7 @@ struct DemoARCanvas: UIViewRepresentable {
 
 struct DemoARWorkspace: View {
     @ObservedObject var imaging: MRIPlanningModel
+    let active: Bool
     @State private var enabled = true
     @State private var gestureStatus = "Move the device to establish tracking."
     @State private var showingInstructions = false
@@ -366,7 +384,7 @@ struct DemoARWorkspace: View {
     var body: some View {
         ZStack(alignment: .top) {
             DemoARCanvas(imaging: imaging, handControlEnabled: $enabled,
-                         gestureStatus: $gestureStatus)
+                         gestureStatus: $gestureStatus, active: active)
                 .ignoresSafeArea(edges: .horizontal)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
