@@ -434,3 +434,46 @@ struct VolumeStudioCanvas: UIViewRepresentable {
         }
     }
 }
+
+
+/// Compact instance of the same GPU renderer in the Study workspace.
+/// Keeps heavy Metal code out of the large SwiftUI MRI editor expression.
+struct EmbeddedVolumePreview: View {
+    @ObservedObject var imaging: MRIPlanningModel
+    @State private var mode: VolumeDisplayMode = .composite
+    @State private var cutoff = 0.28
+    @State private var density = 1.0
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:9) {
+            HStack {
+                Label("TRUE VOLUMETRIC CT / MRI",systemImage:"cube.transparent")
+                    .font(.caption.weight(.bold))
+                Spacer()
+                Text("GPU RAYMARCH").font(.caption2.monospaced())
+                    .foregroundStyle(.teal)
+            }
+            VolumeStudioCanvas(imaging:imaging,displayMode:$mode,
+                               threshold:$cutoff,opacity:$density)
+                .frame(height:335)
+                .clipShape(RoundedRectangle(cornerRadius:12))
+            Picker("Method",selection:$mode) {
+                ForEach(VolumeDisplayMode.allCases) { value in
+                    Text(value.title).tag(value)
+                }
+            }.pickerStyle(.segmented)
+            HStack {
+                Text("Threshold").font(.caption).frame(width:72,alignment:.leading)
+                Slider(value:$cutoff,in:0.01...0.95)
+            }
+            if mode == .composite {
+                HStack {
+                    Text("Opacity").font(.caption).frame(width:72,alignment:.leading)
+                    Slider(value:$density,in:0.2...3.0)
+                }
+            }
+            Text("Renders actual imported voxels with GPU compositing, MIP or intensity iso-surface. No anatomical skull or brain segmentation is inferred.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+}
