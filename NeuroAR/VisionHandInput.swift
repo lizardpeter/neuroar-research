@@ -169,7 +169,7 @@ final class VisionHandInput {
         guard isEnabled else { return }
         if mode != currentMode { currentMode=mode; reset() }
         let thermal=ProcessInfo.processInfo.thermalState
-        let interval:Double = (thermal == .serious || thermal == .critical) ? 0.15 : 0.075
+        let interval:Double = (thermal == .serious || thermal == .critical) ? 0.12 : 0.050
         guard !pending, frame.timestamp-previousStart >= interval else { return }
         pending=true
         previousStart=frame.timestamp
