@@ -1,19 +1,17 @@
 # NeuroAR: GitHub Actions → TestFlight → wireless iPhone install
 
-The workflows in `.github/workflows/` are **templates** until the project is
-committed to a GitHub repository and its Apple Developer signing is configured.
-They have not been run on a hosted Mac or uploaded to App Store Connect.
+The workflows in `.github/workflows/` are committed to the public repository `lizardpeter/neuroar-research`.
+Apple Developer membership is confirmed by the owner. TestFlight upload still requires Apple-side registration, signing credentials, GitHub environment configuration, and a successful signed build. Do not assume that GitHub CI success means TestFlight distribution is configured.
 
 ## Prerequisites (one-time)
 
-1. Enroll in the **paid Apple Developer Program**. Register an explicit iOS App ID
+1. **Apple Developer Program membership: confirmed by the repository owner.** Register an explicit iOS App ID
    and create an app record with that same bundle identifier in App Store Connect.
 2. Create an **Apple Distribution** signing certificate, export it **with its private
    key** as password-protected `.p12`, and make an App Store distribution
    provisioning profile whose name corresponds to the bundle ID.
-3. Generate an **App Store Connect API** key with sufficient app-upload rights.
-   Store the `.p8` contents only as a GitHub Actions secret.
-4. Push this project to a **public GitHub repository**, after reviewing it for patient data and secrets. Create a protected `testflight` environment restricted to `main`. See [`GITHUB_PUBLIC_SETUP.md`](GITHUB_PUBLIC_SETUP.md).
+3. Generate a **team App Store Connect API key** under Users and Access → Integrations → App Store Connect API, with appropriate app distribution and provisioning permissions (typically App Manager; follow your organization's least-privilege policy). **Do not use an individual API key for this workflow**: individual keys cannot access Apple's provisioning endpoints, which the profile-download step needs. Download the `.p8` once and store its contents only in a GitHub Actions environment secret.
+4. The project is already in the public GitHub repository. Create a `testflight` environment restricted to `main` (and with approval protection if supported). See [`GITHUB_PUBLIC_SETUP.md`](GITHUB_PUBLIC_SETUP.md).
 
 ## GitHub Actions Variables
 
