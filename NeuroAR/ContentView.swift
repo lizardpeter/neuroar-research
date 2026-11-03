@@ -163,7 +163,9 @@ struct ContentView: View {
                         .font(.caption2).foregroundStyle(.cyan)
                 }
                 if let result=controller.registration {
-                    HStack(spacing:18) {
+                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                        GridItem(.flexible(), alignment: .leading)],
+                              alignment: .leading, spacing: 10) {
                         metric("LANDMARK FIT",String(format:"%.1f mm",result.landmarkRMSEmeters*1000))
                         metric("WORST RESIDUAL",String(format:"%.1f mm",result.maxLandmarkResidualMeters*1000))
                         metric("FIT POINTS",String(result.count))
