@@ -124,10 +124,10 @@ struct OneHandGestureInterpreter {
         case .move: return (.move(x,y),"PINCH · move")
         case .rotate: return (.rotate(x*3.5,y*3.5,roll),"PINCH · rotate")
         case .scale:
-            let factor = Self.clamp(exp(-y*4.5),0.85,1.17)
+            let factor = Self.clamp(CGFloat(exp(Double(y)*4.5)),0.85,1.17)
             return (.scale(factor),"PINCH · resize")
         case .smart:
-            let factor = Self.clamp(smooth.palmSize/max(0.025,old.palmSize),0.90,1.10)
+            let factor = Self.clamp(smooth.palmSize/max(CGFloat(0.025),old.palmSize),0.90,1.10)
             return (.smartMove(x,y,factor,roll),"PINCH · move/resize/wrist roll")
         }
     }
@@ -214,7 +214,8 @@ final class VisionHandInput {
                   p.confidence >= minConfidence else { return nil }
             return p
         }
-        guard let thumb=joint(.thumbTip),let index=joint(.indexTip),
+        guard let thumb=joint(.thumbTip,minConfidence:0.24) ?? joint(.thumbIP,minConfidence:0.30),
+              let index=joint(.indexTip,minConfidence:0.24) ?? joint(.indexDIP,minConfidence:0.30),
               let wrist=joint(.wrist),let indexBase=joint(.indexMCP),
               let pinkyBase=joint(.littleMCP) else { return nil }
         let middleBase=joint(.middleMCP)
@@ -225,8 +226,10 @@ final class VisionHandInput {
         let palm=max(0.025,max(width,length))
         let gap=hypot(thumb.location.x-index.location.x,
                       thumb.location.y-index.location.y)
-        let center=CGPoint(x:(index.location.x+thumb.location.x)*0.5,
-                           y:(index.location.y+thumb.location.y)*0.5)
+        let pinchCenter=CGPoint(x:(index.location.x+thumb.location.x)*0.5,
+                                y:(index.location.y+thumb.location.y)*0.5)
+        let openCenter=CGPoint(x:(indexBase.location.x+pinkyBase.location.x+wrist.location.x)/3,
+                               y:(indexBase.location.y+pinkyBase.location.y+wrist.location.y)/3)
         let pairs:[(VNHumanHandPoseObservation.JointName,
                     VNHumanHandPoseObservation.JointName)] = [
             (.indexTip,.indexMCP),(.middleTip,.middleMCP),
@@ -241,6 +244,7 @@ final class VisionHandInput {
                             base.location.y-wrist.location.y)
             if tipD > baseD + palm*0.21 { extended += 1 }
         }
+        let center=extended >= 3 && gap/palm > 0.85 ? openCenter : pinchCenter
         return HandLandmarks(center:center,palmSize:palm,
                              wristAngle:atan2(end.y-wrist.location.y,
                                               end.x-wrist.location.x),
