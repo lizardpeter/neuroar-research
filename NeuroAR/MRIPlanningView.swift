@@ -456,7 +456,7 @@ struct MRIPlanningView: View {
                 onOpenAR()
             }
         } message: {
-            Text("MRI landmarks must correspond to identifiable physical points. The overlay does not have verified target accuracy, patient-motion tracking, or suitability for EVD placement.")
+            Text("MRI natural-feature annotations must match the facial locations measured by Vision/LiDAR. Face tracking is experimental and does not establish patient identity, target registration accuracy, or suitability for EVD placement.")
         }
         .fileImporter(isPresented:$importingDICOM,
                       allowedContentTypes:[UTType(filenameExtension:"dcm") ?? .data],
@@ -585,7 +585,7 @@ struct MRIPlanningView: View {
     private var researchLandmarksCard: some View {
         VStack(alignment:.leading,spacing:9) {
             Text("MRI-TO-HEAD RESEARCH LANDMARKS").font(.caption.bold()).tracking(0.8)
-            Text("Set Crosshair mode, select a recognizable MRI surface landmark in the slices, and add its exact physical counterpart in capture order. Three or more noncollinear points are required. These are manual annotations, not automatic face tracking.")
+            Text("For marker-free tracking, annotate the actual MRI facial anatomy with exact labels: LeftEyeCenter, RightEyeCenter, NoseTip, MouthCenter. All four are recommended; at least three non-collinear visible features must match the camera. Vision detects their physical counterparts automatically; no attached markers or manual camera taps are needed. Appearance and MRI field-of-view matter, and matching is unvalidated.")
                 .font(.caption2).foregroundStyle(.secondary)
             HStack {
                 TextField("Landmark name (e.g., point A)",text:$landmarkName)
@@ -610,7 +610,7 @@ struct MRIPlanningView: View {
             Button("Transfer this MRI study to live AR") { arConfirmation=true }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.researchARStudy() == nil || model.loading)
-            Text("Uses the current MRI coordinate frame and selected preview surfaces. You will need to recapture corresponding head landmarks in the AR camera. No prior registration is reused.")
+            Text("Transfers MRI coordinates and preview surfaces. The AR camera searches automatically for matching natural facial features and LiDAR depths. No prior registration is reused.")
                 .font(.caption2).foregroundStyle(.orange)
         }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
     }

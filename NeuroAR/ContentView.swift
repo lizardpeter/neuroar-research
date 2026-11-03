@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var importingStudy=false
     @State private var importingMesh=false
     @State private var showEditor=false
+    @State private var manualLandmarkMode=false
     private let accent=Color(red:0.20,green:0.85,blue:0.90)
 
     var body: some View {
@@ -49,19 +50,26 @@ struct ContentView: View {
                             .ignoresSafeArea(edges:.horizontal)
                         Color.clear.contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { gesture in
-                                controller.captureLandmark(at:gesture.location,viewportSize:camera.size)
+                                if manualLandmarkMode {
+                                    controller.captureLandmark(at:gesture.location,viewportSize:camera.size)
+                                }
                             })
+                            .allowsHitTesting(manualLandmarkMode)
                         if controller.registration == nil {
                             VStack(spacing:6) {
-                                Text("LANDMARK CAPTURE").font(.caption).tracking(1.7).bold()
-                                if let next=controller.nextLandmark {
-                                    Text("Tap the physical location: \(next.name)")
-                                        .font(.subheadline).multilineTextAlignment(.center)
-                                } else {
-                                    Text("Fitting landmark correspondence…").font(.subheadline)
+                                Text("MARKER-FREE HEAD TRACKING").font(.caption).tracking(1.4).bold()
+                                Text(controller.faceVisible
+                                    ? "Face visible · \(controller.naturalFeatureCount) natural 3D features"
+                                    : "Point the rear camera at a visible face")
+                                    .font(.subheadline).multilineTextAlignment(.center)
+                                if controller.availableMRIFeatures < 3 {
+                                    Text("MRI needs 3+ matching annotations: LeftEyeCenter, RightEyeCenter, NoseTip, MouthCenter.")
+                                        .font(.caption2).multilineTextAlignment(.center)
                                 }
-                                Text("\(controller.capturedPoints.count) / \(controller.study.landmarks.count)")
-                                    .font(.caption.monospacedDigit())
+                                if manualLandmarkMode, let next=controller.nextLandmark {
+                                    Text("Optional manual fallback: tap \(next.name) · \(controller.capturedPoints.count) / \(controller.study.landmarks.count)")
+                                        .font(.caption2).multilineTextAlignment(.center)
+                                }
                             }
                             .padding(12).frame(maxWidth:.infinity)
                             .background(.black.opacity(0.72),in:RoundedRectangle(cornerRadius:14))
@@ -129,19 +137,20 @@ struct ContentView: View {
                 .buttonStyle(CompactButtonStyle())
 
                 HStack(spacing:8) {
-                    Button("Bind to visible 50 mm marker") { controller.bindToMarker() }
-                        .disabled(!controller.canBindMarker)
-                    Button("Refine scalp fit") { controller.refineScalpSurface() }
+                    Button("Refine scalp fit (optional)") { controller.refineScalpSurface() }
                         .disabled(!controller.canRefineSurface)
                 }.buttonStyle(CompactButtonStyle())
-                HStack {
-                    Circle().fill(controller.markerVisible ? .green : .orange).frame(width:8,height:8)
-                    Text(controller.markerBound ? "Head marker bound · tracking \(controller.markerVisible ? "visible" : "LOST")" :
-                         "Head marker: \(controller.markerVisible ? "visible, not bound" : "not detected")")
+                HStack(spacing:7) {
+                    Circle().fill(controller.naturalHeadBound ? .green : (controller.faceVisible ? .orange : .gray))
+                        .frame(width:8,height:8)
+                    Text(controller.naturalHeadBound ? "Natural head lock · marker-free" :
+                         (controller.faceVisible ? "Natural face found · awaiting MRI fit" : "Face not visible"))
                         .font(.caption.monospaced())
                 }
-                Text("Physical marker must be printed at exactly 50 mm and fixed to a synthetic phantom. The overlay hides on marker loss; stationary world anchors alone cannot follow a moving head.")
+                Text("Apple Vision finds facial features in the rear RGB camera; LiDAR estimates their 3D positions. Tracking follows head movement automatically and hides the MRI when feature/depth confidence is lost. No printed or attached fiducials.")
                     .font(.caption2).foregroundStyle(.orange)
+                Toggle("Optional manual correspondence fallback",isOn:$manualLandmarkMode)
+                    .font(.caption).tint(.cyan)
                 Toggle("I am testing ONLY a nonhuman phantom/mannequin",isOn:$controller.phantomOnlyAcknowledged)
                     .font(.caption).tint(.cyan)
                 Button("Capture LiDAR phantom diagnostics") { controller.recordPhantomDiagnostic() }
@@ -150,16 +159,12 @@ struct ContentView: View {
                     Text(String(format:"High-confidence samples: %d · spatial spread: %.1f mm · median cloud radius: %.1f mm. These are NOT accuracy metrics.",quality.sampleCount,quality.spatialSpreadMm,quality.medianRadiusMm))
                         .font(.caption2).foregroundStyle(.cyan)
                 }
-                DisclosureGroup("Show printable marker") {
-                    Image("HeadMarker").resizable().interpolation(.none).scaledToFit().frame(width:130,height:130)
-                    Text("Print the source image at an exact 50.0 mm outer width (disable printer scaling). See docs/HEAD_MARKER.md. Not for patients or surgery.")
-                        .font(.caption2).foregroundStyle(.gray)
-                }.font(.caption)
                 if let result=controller.registration {
                     HStack(spacing:18) {
                         metric("LANDMARK FIT",String(format:"%.1f mm",result.landmarkRMSEmeters*1000))
                         metric("WORST RESIDUAL",String(format:"%.1f mm",result.maxLandmarkResidualMeters*1000))
                         metric("FIT POINTS",String(result.count))
+                        metric("NATURAL FIT",controller.naturalFitRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "Unavailable")
                         metric("SURFACE ICP",controller.surfaceFitRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not run")
                         metric("HOLD-OUT",controller.heldOutSurfaceResidualMeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not measured")
                     }
@@ -203,8 +208,8 @@ struct ContentView: View {
                 Divider()
                 Text("Validation status").font(.caption.bold()).foregroundStyle(.orange)
                 Text(controller.plannerLinked
-                     ? "Current MRI planning study and selected coarse 3D surfaces are linked. Landmark fit may be refined with an explicitly labelled scalp mask. Experimental marker-based motion following needs a physical target; imaging accuracy and suitability for EVD navigation have NOT been validated."
-                     : "Only the synthetic phantom or separately imported JSON/USDZ study is loaded. Open MRI Planner to explicitly transfer an MRI study and its landmarks. No automatic head registration or clinical trajectory validation.")
+                     ? "MRI geometry is linked. Natural face tracking uses Vision + LiDAR with no physical marker, but its residuals are training fit only. Incorrect face annotation, expression, occlusion and depth errors can all misplace the overlay. NOT clinical or EVD guidance."
+                     : "The synthetic study or imported JSON/USDZ is active. For automatic MRI overlay, label at least three corresponding natural facial features in the MRI and transfer that study. There is no patient identity verification or clinical validation.")
                     .font(.caption2).foregroundStyle(.gray)
             }
             .padding(16)

@@ -168,10 +168,10 @@ public struct Study: Codable, Sendable {
     public static let synthetic = Study(
         id: "synthetic-education-only", title: "Synthetic anatomy (demo)", isSynthetic: true,
         landmarks: [
-            .init(id:"nose",name:"Nose bridge",pointMm:.init(0,5,90)),
-            .init(id:"leftBrow",name:"Left brow",pointMm:.init(-34,12,75)),
-            .init(id:"rightBrow",name:"Right brow",pointMm:.init(34,12,75)),
-            .init(id:"chin",name:"Chin",pointMm:.init(0,-65,55))
+            .init(id:"noseTip",name:"NoseTip",pointMm:.init(0,-2,95)),
+            .init(id:"leftEyeCenter",name:"LeftEyeCenter",pointMm:.init(-34,13,75)),
+            .init(id:"rightEyeCenter",name:"RightEyeCenter",pointMm:.init(34,13,75)),
+            .init(id:"mouthCenter",name:"MouthCenter",pointMm:.init(0,-44,70))
         ],
         trajectories: [.init(id:"sample",name:"Synthetic path (NOT EVD guidance)",
                              entryMm:.init(35,65,30),targetMm:.init(5,0,4))]

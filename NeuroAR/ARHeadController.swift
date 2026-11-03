@@ -18,16 +18,28 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var depthMm = 30.0
     @Published private(set) var meshImported = false
     @Published private(set) var plannerLinked = false
-    @Published private(set) var markerVisible = false
-    @Published private(set) var markerBound = false
+    @Published private(set) var faceVisible = false
+    @Published private(set) var naturalHeadBound = false
+    @Published private(set) var naturalFeatureCount = 0
+    @Published private(set) var naturalFitRMSEmeters: Double?
     @Published private(set) var surfaceFitRMSEmeters: Double?
     @Published private(set) var lastPhantomDiagnostic: PhantomDepthStatistics?
     @Published var phantomOnlyAcknowledged = false
     private var scalpSamplePointsMeters: [Point3] = []
-    private var trackedMarkerTransform: simd_float4x4?
-    private var mriToMarkerTransform: simd_float4x4?
-    var canBindMarker: Bool { registration != nil && markerVisible && trackedMarkerTransform != nil }
-    var canRefineSurface: Bool { registration != nil && scalpSamplePointsMeters.count >= 15 && capturedPoints.count >= 4 }
+    private let naturalTracker = NaturalHeadTracker()
+    private var naturalReference: NaturalHeadObservation?
+    private var latestNaturalObservation: NaturalHeadObservation?
+    private var baselineMRIToWorld: simd_float4x4?
+    private var currentMRIToWorld: simd_float4x4?
+    private var lastNaturalFrameTime: TimeInterval?
+    private var acquisitionEpoch = UUID()
+    var availableMRIFeatures: Int {
+        (try? NaturalFaceRegistration.mriFeatures(study.landmarks).count) ?? 0
+    }
+    var canRefineSurface: Bool {
+        registration != nil && scalpSamplePointsMeters.count >= 15 &&
+        naturalHeadBound && (latestNaturalObservation?.faceCloudMeters.count ?? 0) >= 25
+    }
 
 
     weak var arView: ARView?
@@ -48,7 +60,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func connect(to view: ARView) {
-        clearRegistration(reason:"New AR session. Capture synthetic phantom landmarks again.")
+        clearRegistration(reason:"New AR session. Look toward the rear camera for marker-free tracking.")
         self.arView = view
         view.automaticallyConfigureSession = false
         view.session.delegate = self
@@ -60,15 +72,8 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         let config = ARWorldTrackingConfiguration()
         config.frameSemantics.insert(.sceneDepth)
         config.worldAlignment = .gravity
-        // Image anchors track a physical marker visible to the REAR camera.
-        // ARKit's userFaceTrackingEnabled is for the camera user's face,
-        // not for tracking an arbitrary person in front of the iPhone.
-        if let image=UIImage(named:"HeadMarker")?.cgImage {
-            let marker=ARReferenceImage(cgImage:image,orientation:.up,physicalWidth:0.050)
-            marker.name="NeuroAR 50 mm phantom marker"
-            config.detectionImages=[marker]
-            config.maximumNumberOfTrackedImages=1
-        }
+        // No ARReferenceImage or attached physical marker is required.
+        // The rear-camera RGB + LiDAR feed is processed with Apple Vision.
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
@@ -81,46 +86,86 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-        updateHeadMarker(anchors)
-    }
-
-    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-        updateHeadMarker(anchors)
-    }
-
-    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
-        guard anchors.contains(where: { $0 is ARImageAnchor }) else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.markerVisible=false
-            self?.trackedMarkerTransform=nil
-            self?.updateMarkerFollower()
-        }
-    }
-
-    private func updateHeadMarker(_ anchors:[ARAnchor]) {
-        guard let item=anchors.compactMap({ $0 as? ARImageAnchor })
-            .first(where: { $0.referenceImage.name == "NeuroAR 50 mm phantom marker" }) else { return }
-        let pose=item.transform
-        let tracked=item.isTracked
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.markerVisible=tracked
-            self.trackedMarkerTransform=tracked ? pose : nil
-            self.updateMarkerFollower()
-        }
-    }
-
-    func bindToMarker() {
-        guard let marker=trackedMarkerTransform,markerVisible,let fit=registration,
-              trackingIsNormal else {
-            status="Keep the printed 50 mm marker fully visible and finish landmark alignment first."
+    /// Acquires head pose from natural RGB facial features and LiDAR.
+    /// An MRI overlay is allowed only when the current study has specifically
+    /// annotated matching natural features (or an existing manual registration).
+    private func handleNaturalHead(_ observation: NaturalHeadObservation?) {
+        guard arView != nil, trackingIsNormal else { return }
+        guard let observation else {
+            faceVisible = false
+            naturalFeatureCount = 0
+            updateHeadFollower()
+            // Do not keep an overlay frozen on a moving or occluded head.
+            // On sustained loss, clear the identity association entirely.
+            if let last = lastNaturalFrameTime,
+               let frame = arView?.session.currentFrame,
+               frame.timestamp - last > 0.7,
+               naturalHeadBound {
+                clearRegistration(reason:"Natural head tracking lost. MRI alignment discarded; reacquire the face.")
+            }
             return
         }
-        mriToMarkerTransform=simd_inverse(marker)*worldFromMRI(fit)
-        markerBound=true
-        status="Research marker following enabled. Overlay is hidden whenever marker tracking is lost. This is NOT anatomical or surgical accuracy."
-        updateMarkerFollower()
+        faceVisible = true
+        naturalFeatureCount = observation.features.count
+        latestNaturalObservation = observation
+        do {
+            if !naturalHeadBound {
+                let base: simd_float4x4
+                if let registration {
+                    // Manual correspondence can seed the live head follower,
+                    // but not establish automatic patient identity.
+                    base = worldFromMRI(registration)
+                } else {
+                    let annotated = try NaturalFaceRegistration.mriFeatures(study.landmarks)
+                    let fit = try NaturalFaceRegistration.fit(mri: annotated,
+                                                               camera: observation.features)
+                    registration = fit.transform
+                    naturalFitRMSEmeters = fit.rmsMeters
+                    base = worldFromMRI(fit.transform)
+                }
+                baselineMRIToWorld = base
+                currentMRIToWorld = base
+                naturalReference = observation
+                lastNaturalFrameTime = observation.timestamp
+                naturalHeadBound = true
+                render()
+                status = String(format:"Natural head acquired using %d features and LiDAR. Face fit %.1f mm (training residual only). Marker-free DEMO; no target accuracy.",
+                                observation.features.count, (naturalFitRMSEmeters ?? 0) * 1000)
+                return
+            }
+            guard let reference = naturalReference, let base = baselineMRIToWorld else {
+                clearRegistration(reason:"Natural head baseline unavailable. Registration discarded.")
+                return
+            }
+            let delta = try NaturalFaceRegistration.motion(reference: reference.features,
+                                                            observed: observation.features)
+            let next = worldFromMRI(delta.transform) * base
+            // No sudden uncontrolled jumps in the displayed overlay.
+            if let previous = currentMRIToWorld {
+                let previousPosition = previous.columns.3
+                let nextPosition = next.columns.3
+                let jump = simd_length(SIMD3<Float>(nextPosition.x - previousPosition.x,
+                                                     nextPosition.y - previousPosition.y,
+                                                     nextPosition.z - previousPosition.z))
+                guard jump < 0.06 else { throw NaturalFaceError.excessiveMotion }
+            }
+            currentMRIToWorld = next
+            naturalFitRMSEmeters = delta.rmsMeters
+            lastNaturalFrameTime = observation.timestamp
+            updateHeadFollower()
+        } catch {
+            // A detected face is not automatically a reliable MRI match.
+            naturalHeadBound = false
+            naturalReference = nil
+            baselineMRIToWorld = nil
+            currentMRIToWorld = nil
+            updateHeadFollower()
+            if registration != nil {
+                clearRegistration(reason:"Natural head pose rejected: \(error.localizedDescription). Reacquire before displaying MRI.")
+            } else {
+                status = "Face detected; no MRI correspondence yet. Annotate LeftEyeCenter, RightEyeCenter, NoseTip, MouthCenter on the MRI. \(error.localizedDescription)"
+            }
+        }
     }
 
     private func worldFromMRI(_ result:RegistrationResult)->simd_float4x4 {
@@ -131,15 +176,14 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         return matrix
     }
 
-    private func updateMarkerFollower() {
+    private func updateHeadFollower() {
         guard let root else { return }
-        if markerBound,let marker=trackedMarkerTransform,markerVisible,
-           let relative=mriToMarkerTransform,trackingIsNormal {
-            root.transform=Transform(matrix:marker*relative)
-            root.isEnabled=true
+        if naturalHeadBound, faceVisible, trackingIsNormal, let current = currentMRIToWorld {
+            root.transform = Transform(matrix: current)
+            root.isEnabled = true
         } else {
-            // Never leave a real-MRI static projection visible on a movable head.
-            root.isEnabled=study.isSynthetic && !markerBound && trackingIsNormal
+            // Never display a stale MRI over a moving, occluded, or untracked head.
+            root.isEnabled = false
         }
     }
 
@@ -148,13 +192,13 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
             status="Only run sensor diagnostics against a consenting synthetic mannequin/phantom. Confirm phantom mode first."
             return
         }
-        guard lidarSupported,trackingIsNormal,capturedPoints.count>=3,
-              let frame=arView?.session.currentFrame else {
-            status="LiDAR tracking and at least three physical phantom reference points are required."
+        guard lidarSupported,trackingIsNormal,faceVisible,
+              let observed=latestNaturalObservation else {
+            status="LiDAR tracking and a naturally detected phantom face are required."
             return
         }
         do {
-            let points=try DepthPointCloud.capture(frame:frame,around:capturedPoints)
+            let points=observed.faceCloudMeters
             guard let metrics=PhantomDepthStatistics.analyze(points) else {
                 status="Not enough high-confidence depth samples; no result recorded."
                 return
@@ -164,41 +208,46 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         } catch { status="Phantom capture failed: \(error.localizedDescription)" }
     }
 
-    /// A landmark-seeded geometric *refinement*, never an automatic identity match.
-    /// Requires an externally labelled scalp mask and ≥4 manual landmarks.
+    /// An OPTIONAL externally segmented scalp-to-LiDAR refinement, seeded by
+    /// the natural face fit. Fitted ICP residual is not anatomical TRE.
     func refineScalpSurface() {
-        guard canRefineSurface,trackingIsNormal,let fit=registration,
-              let frame=arView?.session.currentFrame else {
-            status="Surface refinement needs 4+ landmarks, a deliberately labelled scalp mask, and normal LiDAR tracking."
+        guard canRefineSurface, trackingIsNormal, let fit = registration,
+              let observed = latestNaturalObservation else {
+            status = "Refinement needs a labelled scalp mask, a naturally acquired head, and enough LiDAR face samples."
             return
         }
         do {
-            let cloud=try DepthPointCloud.capture(frame:frame,around:capturedPoints)
-            guard cloud.count>=25 else { throw SurfaceRegistrationError.insufficientCorrespondences }
-            let report=try TrimmedSurfaceICP.refine(sourceMeters:scalpSamplePointsMeters,
-                                                    observedMeters:cloud,initial:fit)
-            // The reserved final landmark remains independent of the ICP fit.
-            guard let last=study.landmarks.last,let measured=capturedPoints.last else {
-                throw SurfaceRegistrationError.invalidInput
+            let cloud = observed.faceCloudMeters
+            let report = try TrimmedSurfaceICP.refine(sourceMeters: scalpSamplePointsMeters,
+                                                      observedMeters: cloud, initial: fit)
+            guard report.matchedPointCount >= 25,
+                  report.fittedRMSEMeters < 0.012 else {
+                throw SurfaceRegistrationError.unstableFit
             }
-            let p=last.pointMm
-            let transformed=report.transform.transform(Point3(p.x/1000,p.y/1000,p.z/1000))
-            let heldout=(transformed-measured).norm
-            guard heldout<=0.03 else { throw SurfaceRegistrationError.unstableFit }
-            registration=report.transform
-            surfaceFitRMSEmeters=report.fittedRMSEMeters
-            heldOutSurfaceResidualMeters=heldout
-            markerBound=false;mriToMarkerTransform=nil // previous attachment pose now invalid
-            status=String(format:"Experimental ICP fit %.1f mm / %d pairs; independent surface point %.1f mm. Rebind marker. NOT a surgical accuracy measurement.",report.fittedRMSEMeters*1000,report.matchedPointCount,heldout*1000)
+            registration = report.transform
+            naturalReference = observed
+            baselineMRIToWorld = worldFromMRI(report.transform)
+            currentMRIToWorld = baselineMRIToWorld
+            surfaceFitRMSEmeters = report.fittedRMSEMeters
+            status = String(format:"Experimental natural-face ICP: %.1f mm over %d correspondences. NOT target registration accuracy.",
+                            report.fittedRMSEMeters * 1000, report.matchedPointCount)
             render()
         } catch {
-            status="Surface refinement declined: \(error.localizedDescription). Original landmark fit retained."
+            status = "Natural scalp refinement rejected: \(error.localizedDescription). Original pose retained."
         }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         frameCount += 1
-        guard frameCount % 12 == 0 else { return }
+        // ARKit delegates need to stay responsive. Vision detection and depth
+        // sampling run on a separate bounded single-flight worker queue.
+        if frameCount % 2 == 0 {
+            naturalTracker.submit(frame: frame) { [weak self, epoch = acquisitionEpoch] observation in
+                guard let self, self.acquisitionEpoch == epoch else { return }
+                self.handleNaturalHead(observation)
+            }
+        }
+        guard frameCount % 6 == 0 else { return }
         let normal: Bool
         switch frame.camera.trackingState {
         case .normal: normal = true
@@ -208,9 +257,10 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
             guard let self else { return }
             self.trackingIsNormal = normal
             if self.lastTrackingNormal && !normal && self.registration != nil {
-                self.clearRegistration(reason:"Tracking interrupted. Re-register before visualizing.")
+                self.clearRegistration(reason:"ARKit camera tracking interrupted; natural MRI registration cleared.")
             }
             self.lastTrackingNormal = normal
+            self.updateHeadFollower()
         }
     }
 
@@ -277,7 +327,11 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
 
     func clearRegistration(reason: String = "Registration reset. Retake landmarks.") {
         registration=nil; heldOutSurfaceResidualMeters=nil;capturedPoints=[]
-        surfaceFitRMSEmeters=nil;markerBound=false;mriToMarkerTransform=nil
+        surfaceFitRMSEmeters=nil
+        naturalHeadBound=false; faceVisible=false; naturalFeatureCount=0
+        naturalReference=nil; latestNaturalObservation=nil
+        baselineMRIToWorld=nil; currentMRIToWorld=nil; lastNaturalFrameTime=nil
+        naturalFitRMSEmeters=nil;acquisitionEpoch=UUID()
         markerAnchors.forEach { $0.removeFromParent() }
         markerAnchors=[]
         anchor?.removeFromParent(); anchor=nil; root=nil
@@ -309,7 +363,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     /// anchor is invalidated. This is visualization, NOT instrument guidance.
     func importPlanningStudy(study planned:Study, intensitySurface:PreviewSurface?,
                              roiSurface:PreviewSurface?, scalpMaskDesignated:Bool, displayedDepthMm:Double) {
-        clearRegistration(reason:"MRI planning study linked. Capture the corresponding physical head landmarks in the displayed order. Unvalidated research mode.")
+        clearRegistration(reason:"MRI linked. Point at the face to acquire natural features using RGB and LiDAR. MRI feature annotations are required; no physical markers.")
         study=planned
         selectedIndex=0
         depthMm=min(max(0,displayedDepthMm),planned.trajectories.first?.lengthMm ?? 0)
@@ -404,7 +458,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         sceneAnchor.addChild(sceneRoot)
         arView.scene.addAnchor(sceneAnchor)
         anchor=sceneAnchor; root=sceneRoot
-        updateMarkerFollower()
+        updateHeadFollower()
 
         if plannerLinked {
             if let intensityPreview {

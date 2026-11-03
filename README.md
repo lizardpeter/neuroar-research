@@ -8,7 +8,7 @@ This open-source native iOS prototype combines **SwiftUI / ARKit / RealityKit**
 with a **natively linked Rust static library**, and a cross-platform Swift
 `GeometryCore`. Source: https://github.com/lizardpeter/neuroar-research
 
-## Current capabilities (v0.8 development)
+## Current capabilities (v0.9 natural-head research prototype)
 
 - **MRI import:** NIfTI-1 `.nii` and gzip-compressed `.nii.gz`, with bounded
   decompression, GZIP checksum validation, original affine, spacing and intensity
@@ -25,16 +25,17 @@ with a **natively linked Rust static library**, and a cross-platform Swift
   depth slider, 3D intensity and mask previews, sampled intensity/ROI profile,
   multiple saved candidates, manually labelled image landmarks, and annotation
   import/export validated against a scan fingerprint.
-- **AR workspace:** LiDAR depth-based manually paired landmarks and rigid
-  registration with reserved held-out landmark check, camera tracking-state
-  loss handling, MRI-to-AR handoff, and an *optional* landmark-seeded, trimmed ICP
-  surface refinement. ICP requires an explicitly designated external scalp mask
-  and 4+ physical landmarks; its surface fit residual is **not TRE**.
-- **Moving phantom:** ARKit detects the supplied 50 mm high-contrast marker.
-  After manual registration the app can bind the MRI overlay relative to the
-  image anchor. It updates as the marker moves and automatically hides the
-  overlay when tracking is lost. This is **research marker tracking**, not
-  markerless continuous patient tracking or validated head tracking.
+- **AR workspace (marker-free):** The rear camera detects natural facial features
+  using Apple Vision, samples those features with high-confidence LiDAR depth,
+  and matches them to explicitly annotated MRI anatomical features by name.
+  No printed marker, face sticker, or attached fiducial is required. The
+  estimate updates while a single face remains visible, and the MRI overlay
+  hides or resets on ambiguity, excessive motion, inadequate depth, or ARKit
+  tracking loss. **These are unvalidated, coarse feature correspondences, not
+  automatic MRI feature extraction or independent anatomical accuracy.**
+- **Optional surface refinement:** User-designated external scalp mask may
+  provide samples for a landmark-seeded, trimmed ICP refinement. Fitted ICP
+  residual is **not TRE**.
 - **On-device diagnostic capture:** LiDAR high-confidence sampled point cloud
   summary against an acknowledged nonhuman phantom. Reports point count and
   3D cloud spread, **not** accuracy. Does not upload raw point clouds or images.
@@ -56,9 +57,11 @@ with a **natively linked Rust static library**, and a cross-platform Swift
    orientation and spacing before visualizing.
 4. Load a mask only when its grid and affine match. A random intensity
    isosurface is **not** an anatomically validated scalp or vessel mask.
-5. For head tracking, see [`docs/HEAD_MARKER.md`](docs/HEAD_MARKER.md).
-   Use a synthetic phantom, measure its independent landmarks, and confirm
-   no overlay remains visible when the 50 mm marker is lost.
+5. For natural head tracking without any attached fiducials, see
+   [`docs/NATURAL_HEAD_TRACKING.md`](docs/NATURAL_HEAD_TRACKING.md).
+   Create MRI facial labels (`LeftEyeCenter`, `RightEyeCenter`, `NoseTip`,
+   `MouthCenter`) before the transfer. Independently test with a phantom,
+   including head motion, occlusion, tracker reset and loss of LiDAR depth.
 6. Public GitHub Actions runs macOS iOS Simulator builds; a separately
    triggered workflow signs and uploads directly to **private TestFlight**
    once Apple account credentials are configured. See
@@ -71,9 +74,10 @@ registration quality, motion-failure checks and the distinction between
 fitted surface error and independently measured target registration error.
 
 **Not yet implemented/validated:** robust JPEG-LS/JPEG2000 or enhanced DICOM;
-validated MRI scalp/vascular/ventricular segmentation; fully markerless
-MRI-to-head registration; independent clinically relevant TRE; calibration
-correction; patient motion tracking without a marker; on-device LiDAR
+validated MRI scalp/vascular/ventricular segmentation; fully automatic
+identification of facial anatomy *within MRI*; independently accurate
+marker-free MRI-to-head registration or full-head 360-degree tracking;
+independent clinically relevant TRE; calibration correction; on-device LiDAR
 measurements; clinical device approval. No candidate route is ranked for
 anatomical safety or EVD suitability.
 
