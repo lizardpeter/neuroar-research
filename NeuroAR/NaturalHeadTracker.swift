@@ -7,7 +7,7 @@ import ImageIO
 /// Natural, marker-free features acquired from the REAR camera through Vision,
 /// paired with high-confidence LiDAR samples in the same ARFrame.
 /// Detection, not patient identity recognition or validated MRI registration.
-struct NaturalHeadObservation {
+struct NaturalHeadObservation: Sendable {
     let timestamp: TimeInterval
     let features: [NaturalFacePoint]
     let faceCloudMeters: [Point3]
@@ -20,7 +20,8 @@ final class NaturalHeadTracker {
     private var inFlight = false
     private var lastSubmitted: TimeInterval = -1
 
-    func submit(frame: ARFrame, completion: @escaping (NaturalHeadObservation?) -> Void) {
+    func submit(frame: ARFrame, expectedHeadCenterWorld: Point3?,
+                completion: @escaping (NaturalHeadObservation?) -> Void) {
         lock.lock()
         if inFlight || (lastSubmitted >= 0 && frame.timestamp - lastSubmitted < 0.16) {
             lock.unlock()
@@ -30,7 +31,7 @@ final class NaturalHeadTracker {
         lastSubmitted = frame.timestamp
         lock.unlock()
         queue.async { [weak self] in
-            let observation = Self.observe(frame: frame)
+            let observation = Self.observe(frame: frame, expectedHeadCenterWorld: expectedHeadCenterWorld)
             self?.lock.lock()
             self?.inFlight = false
             self?.lock.unlock()
@@ -38,7 +39,7 @@ final class NaturalHeadTracker {
         }
     }
 
-    private static func observe(frame: ARFrame) -> NaturalHeadObservation? {
+    private static func observe(frame: ARFrame, expectedHeadCenterWorld: Point3?) -> NaturalHeadObservation? {
         guard let depth = frame.sceneDepth else { return nil }
         let request = VNDetectFaceLandmarksRequest()
         // iPhone target supports portrait UI. The rear sensor buffer remains
@@ -47,14 +48,21 @@ final class NaturalHeadTracker {
         let handler = VNImageRequestHandler(cvPixelBuffer: frame.capturedImage,
                                             orientation: .right, options: [:])
         do { try handler.perform([request]) } catch { return nil }
-        guard let faces = request.results, faces.count == 1, let face = faces.first,
-              face.confidence > 0.6, face.boundingBox.width > 0.12,
-              face.boundingBox.height > 0.12, let landmarks = face.landmarks else { return nil }
+        // No detected face is NOT necessarily tracking loss. Once a face has
+        // established the MRI correspondence, a bounded LiDAR crop can sustain
+        // short-term pose tracking while facial features are briefly obscured.
+        // Multiple visible faces are rejected to avoid subject switching.
+        guard (request.results?.count ?? 0) <= 1 else { return nil }
+        let face: VNFaceObservation? = request.results?.first.flatMap { candidate in
+            candidate.confidence > 0.6 && candidate.boundingBox.width > 0.12 &&
+                candidate.boundingBox.height > 0.12 ? candidate : nil
+        }
+        let landmarks = face?.landmarks
         let regions: [(NaturalFaceFeature, VNFaceLandmarkRegion2D?)] = [
-            (.leftEyeCenter, landmarks.leftEye),
-            (.rightEyeCenter, landmarks.rightEye),
-            (.noseTip, landmarks.nose),
-            (.mouthCenter, landmarks.outerLips)
+            (.leftEyeCenter, landmarks?.leftEye),
+            (.rightEyeCenter, landmarks?.rightEye),
+            (.noseTip, landmarks?.nose),
+            (.mouthCenter, landmarks?.outerLips)
         ]
         let depthMap = depth.depthMap
         let w = CVPixelBufferGetWidth(depthMap), h = CVPixelBufferGetHeight(depthMap)
@@ -119,7 +127,7 @@ final class NaturalHeadTracker {
         }
         var points: [NaturalFacePoint] = []
         for (feature, region) in regions {
-            guard let region, !region.normalizedPoints.isEmpty else { continue }
+            guard let face, let region, !region.normalizedPoints.isEmpty else { continue }
             let normalized = region.normalizedPoints
             // Eyes and mouth use the polygon center. Nose uses the nearest
             // high-confidence point to approximate the visible nose prominence.
@@ -141,23 +149,34 @@ final class NaturalHeadTracker {
             }
             if let candidate { points.append(.init(feature: feature, worldMeters: candidate)) }
         }
-        guard points.count >= 3 else { return nil }
         // A face-relative LiDAR patch is used for independent *surface* checks;
         // it is never considered an anatomical tissue segmentation.
         var cloud = [Point3]()
-        let rect = face.boundingBox.insetBy(dx: face.boundingBox.width * 0.08,
-                                             dy: face.boundingBox.height * 0.08)
-        let rawRect = CGRect(x: 1 - rect.maxY, y: rect.minX,
+        // Vision supplies an initial face-shaped ROI. When features vanish,
+        // use a SPHERICAL LiDAR search around the *last accepted* head-cloud
+        // center in ARKit world coordinates, never the entire scene.
+        // Background objects can still pass this crop: cross-frame ICP and
+        // short expiry guards must reject unsuitable surfaces.
+        let rawRect: CGRect
+        if let face {
+            let rect = face.boundingBox.insetBy(dx: face.boundingBox.width * 0.08,
+                                                 dy: face.boundingBox.height * 0.08)
+            rawRect = CGRect(x: 1 - rect.maxY, y: rect.minX,
                              width: rect.height, height: rect.width)
-        let dx = max(2, Int(sqrt(Double(w * h) / 950.0)))
+        } else {
+            guard let expectedHeadCenterWorld, expectedHeadCenterWorld.allFinite else { return nil }
+            rawRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+        let dx = max(2, Int(sqrt(Double(w * h) / 1100.0)))
         let lowX = max(0, Int(Double(w) * Double(rawRect.minX)))
         let highX = min(w, Int(Double(w) * Double(rawRect.maxX)))
         let lowY = max(0, Int(Double(h) * Double(1 - rawRect.maxY)))
         let highY = min(h, Int(Double(h) * Double(1 - rawRect.minY)))
         if lowX < highX, lowY < highY {
-            let nose = points.first(where: { $0.feature == .noseTip })?.worldMeters
             let cameraOrigin = frame.camera.transform.columns.3
             let cameraPoint = Point3(Double(cameraOrigin.x), Double(cameraOrigin.y), Double(cameraOrigin.z))
+            let faceCenter = points.isEmpty ? nil :
+                points.map(\.worldMeters).reduce(Point3(0, 0, 0), +) * (1 / Double(points.count))
             for y in stride(from: lowY, to: highY, by: dx) {
                 for x in stride(from: lowX, to: highX, by: dx) {
                     guard let z = readDepth(pixelX: x, pixelY: y) else { continue }
@@ -168,13 +187,20 @@ final class NaturalHeadTracker {
                                                 Float(-(imgY - cy) * z / fy), Float(-z), 1)
                     let world = frame.camera.transform * camera
                     let p = Point3(Double(world.x), Double(world.y), Double(world.z))
-                    if p.allFinite && (nose == nil || abs((p - cameraPoint).norm - (nose! - cameraPoint).norm) < 0.12) {
-                        cloud.append(p)
+                    guard p.allFinite else { continue }
+                    if let expectedHeadCenterWorld {
+                        guard (p - expectedHeadCenterWorld).norm < 0.16 else { continue }
+                    } else if let faceCenter {
+                        guard (p - faceCenter).norm < 0.13 else { continue }
+                        // Discard much nearer/farther depth surfaces sharing the image box.
+                        guard abs((p - cameraPoint).norm - (faceCenter - cameraPoint).norm) < 0.11 else { continue }
                     }
+                    cloud.append(p)
                 }
             }
         }
+        guard points.count >= 3 || (expectedHeadCenterWorld != nil && cloud.count >= 80) else { return nil }
         return NaturalHeadObservation(timestamp: frame.timestamp, features: points,
-                                      faceCloudMeters: cloud, detectionConfidence: face.confidence)
+                                      faceCloudMeters: cloud, detectionConfidence: face?.confidence ?? 0)
     }
 }

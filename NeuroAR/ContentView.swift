@@ -143,11 +143,14 @@ struct ContentView: View {
                 HStack(spacing:7) {
                     Circle().fill(controller.naturalHeadBound ? .green : (controller.faceVisible ? .orange : .gray))
                         .frame(width:8,height:8)
-                    Text(controller.naturalHeadBound ? "Natural head lock · marker-free" :
-                         (controller.faceVisible ? "Natural face found · awaiting MRI fit" : "Face not visible"))
+                    Text(controller.surfaceTrackingActive
+                         ? "LiDAR surface continuation · short-term"
+                         : (controller.naturalHeadBound && controller.faceVisible
+                            ? "Natural facial features tracked · marker-free"
+                            : (controller.faceVisible ? "Natural face found · awaiting MRI fit" : "Face not visible")))
                         .font(.caption.monospaced())
                 }
-                Text("Apple Vision finds facial features in the rear RGB camera; LiDAR estimates their 3D positions. Tracking follows head movement automatically and hides the MRI when feature/depth confidence is lost. No printed or attached fiducials.")
+                Text("Rear-camera facial features establish the head pose. When features are briefly obscured, bounded LiDAR surface matching can continue for at most 1.8 seconds; poor depth, ambiguous geometry, or lost tracking hides the overlay. No physical markers.")
                     .font(.caption2).foregroundStyle(.orange)
                 Toggle("Optional manual correspondence fallback",isOn:$manualLandmarkMode)
                     .font(.caption).tint(.cyan)
@@ -166,6 +169,7 @@ struct ContentView: View {
                         metric("FIT POINTS",String(result.count))
                         metric("NATURAL FIT",controller.naturalFitRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "Unavailable")
                         metric("SURFACE ICP",controller.surfaceFitRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not run")
+                        metric("MOTION ICP",controller.surfaceMotionRMSEmeters.map { String(format:"%.1f mm",$0*1000) } ?? "No")
                         metric("HOLD-OUT",controller.heldOutSurfaceResidualMeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not measured")
                     }
                     Text("A fourth or later landmark reserves the final surface point as an independent check. Neither fit nor held-out surface residual measures intracranial target accuracy.")
