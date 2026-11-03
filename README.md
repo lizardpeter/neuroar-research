@@ -83,7 +83,7 @@ The iOS source is **Swift syntax parsed**, but **this environment has no Xcode o
 
 ## CI and no-cable iPhone installation
 
-The included workflows are **not yet deployed**. Follow `TESTFLIGHT_SETUP.md` to create an Apple Developer app, signing identity, provisioning profile, API key, and GitHub variables/secrets. Ordinary pushes build on a hosted Mac against iOS Simulator without signing. A manually triggered workflow can sign and upload a release to App Store Connect/TestFlight. After TestFlight processing and an invitation, installation on the iPhone works over the air. **Neither a Mac runner execution nor a TestFlight installation has been verified for this package.** Do not upload patient images or secrets to GitHub.
+The GitHub Actions workflows are now **committed to the public repository**. Follow `GITHUB_PUBLIC_SETUP.md` and `TESTFLIGHT_SETUP.md` to create an Apple Developer app, signing identity, provisioning profile, API key, and GitHub variables/secrets. Ordinary pushes build on a hosted Mac against iOS Simulator without signing. A manually triggered workflow can sign and upload a release to App Store Connect/TestFlight. After TestFlight processing and an invitation, installation on the iPhone works over the air. **Neither a Mac runner execution nor a TestFlight installation has been verified for this package.** Do not upload patient images or secrets to GitHub.
 
 
 ## Swift + Rust architecture (next step)
