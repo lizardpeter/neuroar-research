@@ -147,7 +147,7 @@ struct TrajectorySceneView: UIViewRepresentable {
         let material=SCNMaterial()
         material.diffuse.contents=UIImage(cgImage:image)
         material.lightingModel = .constant
-        material.doubleSided=true
+        material.isDoubleSided=true
         material.transparency=0.72
         material.writesToDepthBuffer=false
         geometry.firstMaterial=material
@@ -178,7 +178,7 @@ struct TrajectorySceneView: UIViewRepresentable {
                                  elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
         let material=SCNMaterial()
         material.diffuse.contents=color
-        material.doubleSided=true
+        material.isDoubleSided=true
         material.lightingModel = .constant
         material.transparency=CGFloat(color.cgColor.alpha)
         material.writesToDepthBuffer=false

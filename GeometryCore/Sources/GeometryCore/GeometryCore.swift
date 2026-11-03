@@ -139,6 +139,12 @@ public struct StudyTrajectory: Codable, Identifiable, Sendable {
     public let name: String
     public var entryMm: Point3
     public var targetMm: Point3
+    public init(id: String, name: String, entryMm: Point3, targetMm: Point3) {
+        self.id = id
+        self.name = name
+        self.entryMm = entryMm
+        self.targetMm = targetMm
+    }
     public var lengthMm: Double { (targetMm-entryMm).norm }
     public func atDepth(_ depthMm: Double) -> Point3 {
         let d = max(0, min(depthMm, lengthMm))
