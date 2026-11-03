@@ -176,13 +176,22 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
                 report("Tracking is not stable. Slowly scan the table and retry.")
                 return
             }
-            let candidates = arView.raycast(from:screenPoint,
-                                            allowing:.existingPlaneGeometry,
-                                            alignment:.horizontal)
-            let fallback = candidates.isEmpty
-                ? arView.raycast(from:screenPoint,allowing:.estimatedPlane,alignment:.horizontal)
-                : candidates
-            guard let hit = fallback.first else {
+            // ARSCNView exposes raycastQuery; ARView's direct raycast method
+            // is not available on SceneKit. Let the ARSession execute queries.
+            let planeQuery = arView.raycastQuery(from:screenPoint,
+                                                 allowing:.existingPlaneGeometry,
+                                                 alignment:.horizontal)
+            let planes = planeQuery.map { arView.session.raycast($0) } ?? []
+            let candidates: [ARRaycastResult]
+            if planes.isEmpty {
+                let estimated = arView.raycastQuery(from:screenPoint,
+                                                    allowing:.estimatedPlane,
+                                                    alignment:.horizontal)
+                candidates = estimated.map { arView.session.raycast($0) } ?? []
+            } else {
+                candidates = planes
+            }
+            guard let hit = candidates.first else {
                 report("No horizontal surface at reticle. Move your phone to scan a table or floor.")
                 return
             }
@@ -284,8 +293,8 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
 
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other:UIGestureRecognizer) -> Bool {
-            recognizer is UITapGestureRecognizer == false &&
-                other is UITapGestureRecognizer == false
+            !(recognizer is UITapGestureRecognizer) &&
+                !(other is UITapGestureRecognizer)
         }
 
         @objc private func onPlaceTap(_ tap: UITapGestureRecognizer) {
