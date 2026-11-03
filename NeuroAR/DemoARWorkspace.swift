@@ -263,7 +263,8 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
             // Run detection whenever Demo AR is visible, including BEFORE
             // placement. The HUD can therefore diagnose camera/lighting
             // problems independently of AR anchors and volume rendering.
-            guard parent.handEnabled else { return }
+            guard parent.active else { return }
+            if parent.handEnabled {
             handInput.process(frame:frame,isEnabled:true,mode:parent.handMode) {
                 [weak self] change,telemetry in
                 guard let self,self.parent.active,self.parent.handEnabled else { return }
@@ -295,7 +296,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
                     self.renderer?.rotate(dx:0,dy:0,roll:Float(roll))
                 }
             }
-            guard parent.active else { return }
+            }
             if lidarAvailable {
                 let meshCount = frame.anchors.reduce(into:0) { count, anchor in
                     if anchor is ARMeshAnchor { count += 1 }
