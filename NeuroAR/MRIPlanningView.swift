@@ -186,21 +186,46 @@ final class MRIPlanningModel: ObservableObject {
         status="Image loaded in MRI coordinates. Define entry/target manually; it has NOT been registered to a physical head."
     }
 
+    func loadDemoDataset(_ dataset: DemoDataset) {
+        guard !loading else { return }
+        loading = true
+        status = "Downloading and validating \(dataset.title) for offline research preview…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: Result<VoxelVolume, Error>
+            do { result = .success(try await DemoDatasetLoader.load(dataset)) }
+            catch { result = .failure(error) }
+            await MainActor.run {
+                guard let self else { return }
+                self.loading = false
+                switch result {
+                case let .success(loaded):
+                    self.replaceImage(with: loaded)
+                    self.status = "Loaded \(dataset.title) from \(dataset.source). " +
+                        "CT and MR are NOT co-registered by this app. Verify individual image orientation."
+                case let .failure(error):
+                    self.status = "Demo download/import failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     func loadVolume(at url: URL, asMask: Bool) {
         guard !loading else { return }
         loading=true
-        status="Reading \(asMask ? "segmentation mask" : "MRI volume") locally…"
+        status="Reading \(asMask ? "segmentation mask" : "CT/MRI volume") locally…"
         let access=url.startAccessingSecurityScopedResource()
         // Security scope must stay active through the actual file read.
         Task.detached(priority:.userInitiated) { [weak self] in
             let result: Result<VoxelVolume,Error>
             do {
-                guard url.lastPathComponent.lowercased().hasSuffix(".nii") ||
-                      url.lastPathComponent.lowercased().hasSuffix(".nii.gz") else {
-                    throw ImagingError.unsupported("select a .nii or .nii.gz volume")
+                let name = url.lastPathComponent.lowercased()
+                guard name.hasSuffix(".nii") || name.hasSuffix(".nii.gz") ||
+                      name.hasSuffix(".nrrd") else {
+                    throw ImagingError.unsupported("select a .nii, .nii.gz or .nrrd volume")
                 }
                 let data=try Data(contentsOf:url,options:[.mappedIfSafe])
-                let v=try CompressedNiftiReader.load(data)
+                let v=try name.hasSuffix(".nrrd") ? NRRDReader.load(data) :
+                    CompressedNiftiReader.load(data)
                 result = .success(v)
             } catch { result = .failure(error) }
             if access { url.stopAccessingSecurityScopedResource() }
@@ -312,6 +337,7 @@ struct MRIPlanningView: View {
     @ObservedObject var model:MRIPlanningModel
     @ObservedObject var arController:ARHeadController
     let onOpenAR: () -> Void
+    @State private var showingDemoLibrary=false
     @State private var importingVolume=false
     @State private var importingMask=false
     @State private var importingDICOM=false
@@ -460,12 +486,18 @@ struct MRIPlanningView: View {
         .onAppear {
             if model.tissueSurface == nil && !model.surfaceBusy { model.rebuildPreview() }
         }
+        .sheet(isPresented:$showingDemoLibrary) {
+            DemoLibrarySheet { item in
+                showingDemoLibrary = false
+                model.loadDemoDataset(item)
+            }
+        }
         .fileImporter(isPresented:$importingVolume,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data]) { result in
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data, UTType(filenameExtension:"nrrd") ?? .data]) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:false) }
         }
         .fileImporter(isPresented:$importingMask,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data]) { result in
+                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data, UTType(filenameExtension:"nrrd") ?? .data]) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:true) }
         }
         .fileImporter(isPresented:$importingPlan,allowedContentTypes:[.json]) { result in
@@ -539,7 +571,7 @@ struct MRIPlanningView: View {
         HStack(spacing: 10) {
             Menu {
                 Button { importingVolume = true } label: {
-                    Label("MRI · NIfTI (.nii / .nii.gz)", systemImage: "square.stack")
+                    Label("CT/MRI · NIfTI or NRRD", systemImage: "square.stack")
                 }
                 Button { importingDICOM = true } label: {
                     Label("DICOM image series", systemImage: "square.on.square")
@@ -552,8 +584,15 @@ struct MRIPlanningView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            Button { model.resetDemo() } label: {
-                Label("Demo", systemImage: "arrow.counterclockwise")
+            Menu {
+                Button { showingDemoLibrary = true } label: {
+                    Label("Real CT and MRI demo library", systemImage: "square.stack.3d.up")
+                }
+                Button { model.resetDemo() } label: {
+                    Label("Reset synthetic phantom", systemImage: "arrow.counterclockwise")
+                }
+            } label: {
+                Label("Demos", systemImage: "cube.transparent")
             }
             .buttonStyle(.bordered)
         }
