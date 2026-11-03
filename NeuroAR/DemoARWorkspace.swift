@@ -1,456 +1,452 @@
 import SwiftUI
-import SceneKit
 import ARKit
-import Vision
-import CoreGraphics
+import SceneKit
+import MetalKit
 import GeometryCore
 import simd
 
-/// Tabletop-only AR. The virtual model has no physical-head registration.
-/// Uses rear-camera AR world tracking, not ARFaceTrackingConfiguration.
-struct DemoARCanvas: UIViewRepresentable {
+/// Deliberately separate from patient-facing Live AR.
+/// A real ARAnchor is created only after an explicit surface raycast.
+/// Nothing follows the camera and no anatomical registration is claimed.
+struct AnchoredVolumeARCanvas: UIViewRepresentable {
     @ObservedObject var imaging: MRIPlanningModel
-    @Binding var handControlEnabled: Bool
+    @Binding var trackingStatus: String
     @Binding var gestureStatus: String
-    var active: Bool
-    var showScalp: Bool
-    var showSkull: Bool
-    var resetToken: Int
+    @Binding var lidarStatus: String
+    @Binding var isPlaced: Bool
+    let active: Bool
+    let handEnabled: Bool
+    let placementRequest: Int
+    let resetRequest: Int
+    let displayMode: VolumeDisplayMode
+    let threshold: Double
+    let opacity: Double
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeCoordinator() -> Coordinator { Coordinator(parent:self) }
 
     func makeUIView(context: Context) -> ARSCNView {
-        let view = ARSCNView(frame: .zero)
-        view.scene = SCNScene()
-        view.autoenablesDefaultLighting = true
-        view.automaticallyUpdatesLighting = true
-        view.antialiasingMode = .multisampling4X
-        view.session.delegate = context.coordinator
-        view.session.delegateQueue = .main
-        context.coordinator.view = view
-        view.scene.rootNode.addChildNode(context.coordinator.model)
-        context.coordinator.installTouchGestures(on: view)
-        context.coordinator.refreshScene()
-        context.coordinator.updateSessionIfNeeded()
-        return view
+        let ar = ARSCNView(frame:.zero)
+        ar.scene = SCNScene()
+        ar.autoenablesDefaultLighting = false
+        ar.automaticallyUpdatesLighting = false
+        ar.session.delegate = context.coordinator
+        ar.session.delegateQueue = .main
+        ar.allowsCameraControl = false
+        context.coordinator.arView = ar
+        if let renderer = context.coordinator.renderer {
+            let overlay = MTKView(frame:.zero,device:renderer.device)
+            renderer.source = .tabletop
+            renderer.arView = ar
+            renderer.configure(view:overlay,transparent:true)
+            overlay.isUserInteractionEnabled = false
+            overlay.translatesAutoresizingMaskIntoConstraints = false
+            ar.addSubview(overlay)
+            NSLayoutConstraint.activate([
+                overlay.leadingAnchor.constraint(equalTo:ar.leadingAnchor),
+                overlay.trailingAnchor.constraint(equalTo:ar.trailingAnchor),
+                overlay.topAnchor.constraint(equalTo:ar.topAnchor),
+                overlay.bottomAnchor.constraint(equalTo:ar.bottomAnchor)
+            ])
+            context.coordinator.metalOverlay = overlay
+        }
+        context.coordinator.installTouch(on:ar)
+        context.coordinator.updateView()
+        return ar
+    }
+
+    func updateUIView(_ uiView: ARSCNView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.updateView()
     }
 
     static func dismantleUIView(_ uiView: ARSCNView, coordinator: Coordinator) {
         uiView.session.pause()
         uiView.session.delegate = nil
-        coordinator.view = nil
-        coordinator.resetHandBaseline()
-    }
-
-    func updateUIView(_ uiView: ARSCNView, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.refreshSceneIfNeeded()
-        context.coordinator.updateSessionIfNeeded()
-        context.coordinator.resetIfNeeded()
+        coordinator.renderer?.isActive = false
+        coordinator.renderer?.arView = nil
+        coordinator.metalOverlay?.delegate = nil
+        coordinator.arView = nil
+        coordinator.handInput.reset()
     }
 
     final class Coordinator: NSObject, ARSessionDelegate, UIGestureRecognizerDelegate {
-        var parent: DemoARCanvas
-        weak var view: ARSCNView?
-        let model = SCNNode()
-        private let visionQueue = DispatchQueue(label: "neuroar.tabletop-vision-hand", qos: .userInitiated)
-        private var processingHand = false
-        private var lastVisionFrame: TimeInterval = -.infinity
-        private var lastRevision = -1
-        private var lastSliceKey = ""
-        private var placed = false
-        private var sessionActive = false
-        private var oneHand: CGPoint?
-        private var twoHands: (center: CGPoint, length: CGFloat, angle: CGFloat)?
-        private var statusText = ""
-        private var lastResetToken = 0
+        var parent: AnchoredVolumeARCanvas
+        weak var arView: ARSCNView?
+        weak var metalOverlay: MTKView?
+        let renderer = MedicalVolumeRenderer()
+        let handInput = VisionHandInput()
+        private var running = false
+        private var activeAnchor: ARAnchor?
+        private var lidarAvailable = false
+        private var lastPlaceRequest = 0
+        private var lastResetRequest = 0
+        private var lastTrackingStatus = ""
+        private var lastHandStatus = ""
+        private var lastLidarStatus = ""
+        private var wasTrackingNormal = false
 
-        init(_ parent: DemoARCanvas) {
+        init(parent:AnchoredVolumeARCanvas) {
             self.parent = parent
-            model.name = "Unregistered tabletop research display"
             super.init()
         }
 
-        func report(_ message: String) {
-            guard statusText != message else { return }
-            statusText = message
-            parent.gestureStatus = message
+        func updateView() {
+            guard let arView else { return }
+            renderer?.load(parent.imaging.volume,revision:parent.imaging.volumeRevision)
+            renderer?.window = parent.imaging.window
+            renderer?.displayMode = parent.displayMode
+            renderer?.threshold = Float(parent.threshold)
+            renderer?.opacity = Float(parent.opacity)
+            renderer?.useSceneDepth = lidarAvailable
+            renderer?.isActive = parent.active
+            if parent.active && !running { startSession() }
+            else if !parent.active && running {
+                arView.session.pause()
+                running = false
+                handInput.reset()
+                renderer?.isActive = false
+                clearAnchor()
+            }
+            if parent.resetRequest != lastResetRequest {
+                lastResetRequest = parent.resetRequest
+                clearAnchor()
+                renderer?.resetInteraction()
+                report("Reposition: scan a horizontal surface, then tap to place.")
+            }
+            if parent.placementRequest != lastPlaceRequest {
+                lastPlaceRequest = parent.placementRequest
+                place(at:CGPoint(x:arView.bounds.midX,y:arView.bounds.midY))
+            }
+            if !parent.handEnabled { handInput.reset() }
         }
 
-        func updateSessionIfNeeded() {
-            guard let view else { return }
-            if parent.active && !sessionActive {
-                guard ARWorldTrackingConfiguration.isSupported else {
-                    report("AR world tracking is unavailable on this device.")
-                    return
-                }
-                let config = ARWorldTrackingConfiguration()
-                config.worldAlignment = .gravity
-                view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
-                sessionActive = true
-                placed = false
-            } else if !parent.active && sessionActive {
-                view.session.pause()
-                sessionActive = false
-                resetHandBaseline()
-                placed = false
+        private func startSession() {
+            guard let arView, ARWorldTrackingConfiguration.isSupported else {
+                report("World tracking is unavailable on this device.")
+                return
+            }
+            clearAnchor()
+            let config = ARWorldTrackingConfiguration()
+            config.worldAlignment = .gravity
+            config.planeDetection = [.horizontal]
+            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+                config.sceneReconstruction = .meshWithClassification
+                lidarAvailable = true
+            } else if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                config.sceneReconstruction = .mesh
+                lidarAvailable = true
+            } else {
+                lidarAvailable = false
+            }
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+                config.frameSemantics.insert(.smoothedSceneDepth)
+            }
+            renderer?.useSceneDepth = lidarAvailable
+            let message = lidarAvailable
+                ? "LiDAR mesh raycasts + smoothed depth enabled"
+                : "Visual-inertial AR (no LiDAR scene mesh available)"
+            if message != lastLidarStatus {
+                lastLidarStatus = message
+                parent.lidarStatus = message
+            }
+            arView.session.run(config,options:[.resetTracking,.removeExistingAnchors])
+            running = true
+            wasTrackingNormal = false
+            report("Scan a table or floor, then tap the surface to place the volume.")
+        }
+
+        private func report(_ text:String) {
+            guard text != lastTrackingStatus else { return }
+            lastTrackingStatus = text
+            parent.trackingStatus = text
+        }
+
+        private func reportHand(_ text:String) {
+            guard text != lastHandStatus else { return }
+            lastHandStatus = text
+            parent.gestureStatus = text
+        }
+
+        /// No arbitrary camera-relative fallback: never fabricate a placement
+        /// at 65 cm when LiDAR/ARKit has not actually found a surface.
+        private func place(at screenPoint: CGPoint) {
+            guard let arView, running,
+                  let frame=arView.session.currentFrame,
+                  case .normal = frame.camera.trackingState else {
+                report("Tracking is not stable. Slowly scan the table and retry.")
+                return
+            }
+            let candidates = arView.raycast(from:screenPoint,
+                                            allowing:.existingPlaneGeometry,
+                                            alignment:.horizontal)
+            let fallback = candidates.isEmpty
+                ? arView.raycast(from:screenPoint,allowing:.estimatedPlane,alignment:.horizontal)
+                : candidates
+            guard let hit = fallback.first else {
+                report("No horizontal surface at reticle. Move your phone to scan a table or floor.")
+                return
+            }
+            clearAnchor()
+            let anchor = ARAnchor(name:"NeuroAR-VirtualVolume",transform:hit.worldTransform)
+            activeAnchor = anchor
+            renderer?.anchorTransform = hit.worldTransform
+            renderer?.resetInteraction()
+            arView.session.add(anchor:anchor)
+            parent.isPlaced = true
+            report("AR-anchored scan placed. Move around it; camera motion must not translate the model.")
+        }
+
+        private func clearAnchor() {
+            if let activeAnchor,let arView {
+                arView.session.remove(anchor:activeAnchor)
+            }
+            activeAnchor = nil
+            renderer?.anchorTransform = nil
+            parent.isPlaced = false
+            handInput.reset()
+        }
+
+        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+            updateAnchors(anchors)
+        }
+
+        func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+            updateAnchors(anchors)
+        }
+
+        private func updateAnchors(_ anchors: [ARAnchor]) {
+            guard let id=activeAnchor?.identifier else { return }
+            for anchor in anchors where anchor.identifier == id {
+                activeAnchor = anchor
+                // Only ARKit-originated anchor localization updates this pose.
+                renderer?.anchorTransform = anchor.transform
             }
         }
 
-        func resetIfNeeded() {
-            guard lastResetToken != parent.resetToken else { return }
-            lastResetToken = parent.resetToken
-            resetPose()
-        }
-
-        func resetHandBaseline() {
-            oneHand = nil
-            twoHands = nil
+        func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+            guard let id=activeAnchor?.identifier,
+                  anchors.contains(where:{ $0.identifier == id }) else { return }
+            activeAnchor = nil
+            renderer?.anchorTransform = nil
+            parent.isPlaced = false
+            report("AR anchor was lost; scan and place again.")
         }
 
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
-            if !placed {
-                let camera = frame.camera.transform
-                let forward = SIMD3<Float>(-camera.columns.2.x, -camera.columns.2.y, -camera.columns.2.z)
-                let eye = SIMD3<Float>(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z)
-                model.simdPosition = eye + forward * 0.65
-                placed = true
-            }
-            guard parent.active, parent.handControlEnabled else {
-                resetHandBaseline()
-                return
-            }
+            guard parent.active else { return }
             guard case .normal = frame.camera.trackingState else {
-                resetHandBaseline()
-                report("AR tracking limited. Hold the phone steady; hand controls paused.")
+                if wasTrackingNormal {
+                    wasTrackingNormal = false
+                    handInput.reset()
+                    report("World tracking limited: volume hidden to prevent apparent drift.")
+                }
                 return
             }
-            guard !processingHand, frame.timestamp - lastVisionFrame > 0.16 else { return }
-            lastVisionFrame = frame.timestamp
-            processingHand = true
-            let pixels = frame.capturedImage
-            visionQueue.async { [weak self] in
-                let request = VNDetectHumanHandPoseRequest()
-                request.maximumHandCount = 2
-                var found: [PinchedHand] = []
-                do {
-                    // Portrait rear-camera sensor orientation. 2D observations
-                    // control display transforms, not measured 3D hand positions.
-                    let handler = VNImageRequestHandler(cvPixelBuffer: pixels,
-                                                        orientation: .right, options: [:])
-                    try handler.perform([request])
-                    for hand in request.results ?? [] {
-                        guard let thumb = try? hand.recognizedPoint(.thumbTip),
-                              let index = try? hand.recognizedPoint(.indexTip),
-                              thumb.confidence >= 0.4, index.confidence >= 0.4 else { continue }
-                        let a = thumb.location
-                        let b = index.location
-                        let distance = hypot(a.x-b.x, a.y-b.y)
-                        guard distance < 0.08 else { continue }
-                        found.append(PinchedHand(point: CGPoint(x: (a.x+b.x)*0.5,
-                                                                y: (a.y+b.y)*0.5)))
-                    }
-                } catch {
-                    // Unavailable frames and confidence failures are ordinary,
-                    // never evidence of a stable gesture.
+            if !wasTrackingNormal {
+                wasTrackingNormal = true
+                if activeAnchor == nil {
+                    report("Tracking ready. Tap the detected horizontal surface to place.")
+                } else {
+                    report("AR anchor tracked. Volume stays fixed in room coordinates.")
                 }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    self.processingHand = false
-                    guard self.parent.active, self.parent.handControlEnabled, self.view != nil else { return }
-                    self.interpretHands(found)
+            }
+            guard activeAnchor != nil,parent.handEnabled,renderer != nil else { return }
+            handInput.process(frame:frame,isEnabled:true) { [weak self] change,message in
+                guard let self,self.parent.active,self.parent.handEnabled,
+                      self.activeAnchor != nil else { return }
+                switch change {
+                case .none: break
+                case let .translate(x,y):
+                    self.renderer?.moveInView(dx:Float(x*0.14),dy:Float(y*0.14))
+                case let .transform(factor,twist,turn):
+                    self.renderer?.scale(by:Float(factor))
+                    self.renderer?.rotate(dx:Float(turn),dy:0,roll:Float(twist))
                 }
+                self.reportHand(message)
             }
         }
 
-        private struct PinchedHand {
-            let point: CGPoint
-        }
-
-        private func interpretHands(_ detected: [PinchedHand]) {
-            let hands = detected.sorted { $0.point.x < $1.point.x }
-            guard !hands.isEmpty else {
-                resetHandBaseline()
-                report("Show a pinched hand to move; pinch with both hands to resize/rotate.")
-                return
-            }
-            if hands.count >= 2 {
-                oneHand = nil
-                let a = hands[0].point, b = hands[1].point
-                let center = CGPoint(x: (a.x+b.x)*0.5, y: (a.y+b.y)*0.5)
-                let length = hypot(b.x-a.x, b.y-a.y)
-                guard length > 0.12 else { resetHandBaseline(); return }
-                let angle = atan2(b.y-a.y, b.x-a.x)
-                if let last = twoHands {
-                    let ratio = min(1.12, max(0.89, length / max(0.01, last.length)))
-                    scale(by: Float(ratio))
-                    var angleChange = angle - last.angle
-                    while angleChange > .pi { angleChange -= 2 * .pi }
-                    while angleChange < -.pi { angleChange += 2 * .pi }
-                    model.eulerAngles.z += Float(max(-0.14, min(0.14, angleChange)))
-                    model.eulerAngles.y += Float(max(-0.08, min(0.08,
-                        (center.x-last.center.x) * 1.8)))
-                }
-                twoHands = (center, length, angle)
-                report("Two hands: spread to scale, twist to rotate. Experimental 2D gestures.")
-            } else {
-                twoHands = nil
-                let p = hands[0].point
-                if let old = oneHand {
-                    let deltaX = max(-0.04, min(0.04, p.x-old.x))
-                    let deltaY = max(-0.04, min(0.04, p.y-old.y))
-                    model.position.x += Float(deltaX * 0.48)
-                    model.position.y += Float(deltaY * 0.48)
-                }
-                oneHand = p
-                report("One pinched hand: move the virtual model. No physical head registration.")
-            }
-        }
-
-        private func scale(by ratio: Float) {
-            let clamped = max(0.45, min(2.8, model.simdScale.x * ratio))
-            model.simdScale = SIMD3<Float>(repeating: clamped)
-        }
-
-        func installTouchGestures(on view: ARSCNView) {
-            let rotate = UIPanGestureRecognizer(target: self, action: #selector(onRotate(_:)))
-            rotate.maximumNumberOfTouches = 1
-            let move = UIPanGestureRecognizer(target: self, action: #selector(onMove(_:)))
+        func installTouch(on view:ARSCNView) {
+            let placeTap = UITapGestureRecognizer(target:self,action:#selector(onPlaceTap(_:)))
+            let orbit = UIPanGestureRecognizer(target:self,action:#selector(onRotate(_:)))
+            orbit.maximumNumberOfTouches = 1
+            let move = UIPanGestureRecognizer(target:self,action:#selector(onTranslate(_:)))
             move.minimumNumberOfTouches = 2
             move.maximumNumberOfTouches = 2
-            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(onScale(_:)))
-            let twist = UIRotationGestureRecognizer(target: self, action: #selector(onTwist(_:)))
-            for recognizer in [rotate, move, pinch, twist] {
-                recognizer.delegate = self
-                view.addGestureRecognizer(recognizer)
+            let pinch = UIPinchGestureRecognizer(target:self,action:#selector(onScale(_:)))
+            let twist = UIRotationGestureRecognizer(target:self,action:#selector(onTwist(_:)))
+            for gesture in [placeTap,orbit,move,pinch,twist] {
+                gesture.delegate = self
+                view.addGestureRecognizer(gesture)
             }
+            placeTap.require(toFail:orbit)
         }
 
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other:UIGestureRecognizer) -> Bool {
+            recognizer is UITapGestureRecognizer == false &&
+                other is UITapGestureRecognizer == false
         }
 
-        @objc private func onRotate(_ gesture: UIPanGestureRecognizer) {
-            guard let view else { return }
-            let delta = gesture.translation(in: view)
-            if gesture.state == .changed {
-                model.eulerAngles.y += Float(delta.x) * 0.007
-                model.eulerAngles.x += Float(delta.y) * 0.007
+        @objc private func onPlaceTap(_ tap: UITapGestureRecognizer) {
+            guard tap.state == .ended,activeAnchor == nil,let arView else { return }
+            place(at:tap.location(in:arView))
+        }
+
+        @objc private func onRotate(_ pan:UIPanGestureRecognizer) {
+            guard let arView,activeAnchor != nil else { return }
+            let p=pan.translation(in:arView)
+            if pan.state == .changed {
+                renderer?.rotate(dx:Float(p.x)*0.005,dy:Float(p.y)*0.005)
             }
-            gesture.setTranslation(.zero, in: view)
+            pan.setTranslation(.zero,in:arView)
         }
 
-        @objc private func onMove(_ gesture: UIPanGestureRecognizer) {
-            guard let view else { return }
-            let delta = gesture.translation(in: view)
-            if gesture.state == .changed {
-                model.position.x += Float(delta.x) * 0.00055
-                model.position.y -= Float(delta.y) * 0.00055
+        @objc private func onTranslate(_ pan:UIPanGestureRecognizer) {
+            guard let arView,activeAnchor != nil else { return }
+            let p=pan.translation(in:arView)
+            if pan.state == .changed {
+                renderer?.moveInView(dx:Float(p.x)*0.0005,dy:-Float(p.y)*0.0005)
             }
-            gesture.setTranslation(.zero, in: view)
+            pan.setTranslation(.zero,in:arView)
         }
 
-        @objc private func onScale(_ gesture: UIPinchGestureRecognizer) {
-            if gesture.state == .changed { scale(by: Float(gesture.scale)) }
-            gesture.scale = 1
-        }
-
-        @objc private func onTwist(_ gesture: UIRotationGestureRecognizer) {
-            if gesture.state == .changed { model.eulerAngles.z -= Float(gesture.rotation) }
-            gesture.rotation = 0
-        }
-
-        func resetPose() {
-            model.eulerAngles = SCNVector3Zero
-            model.simdScale = SIMD3<Float>(repeating: 1)
-            placed = false
-            resetHandBaseline()
-            report("Recentered virtual demo. No MRI-to-patient registration.")
-        }
-
-        func refreshSceneIfNeeded() {
-            let imaging = parent.imaging
-            let key = "\(imaging.volumeRevision)/\(imaging.maskRevision)/" +
-                "\(imaging.cursorMm.x)/\(imaging.cursorMm.y)/\(imaging.cursorMm.z)/" +
-                "\(imaging.window.lowerBound)/\(imaging.window.upperBound)/" +
-                "\(imaging.showSlices3D)/\(imaging.showIntensity3D)/\(imaging.showROI3D)/" +
-                "\(parent.showScalp)/\(parent.showSkull)/" +
-                "\(imaging.tissueSurface?.triangleCount ?? 0)/\(imaging.maskSurface?.triangleCount ?? 0)"
-            guard lastSliceKey != key || lastRevision != imaging.volumeRevision else { return }
-            lastSliceKey = key
-            lastRevision = imaging.volumeRevision
-            refreshScene()
-        }
-
-        func refreshScene() {
-            model.childNodes.forEach { $0.removeFromParentNode() }
-            let image = parent.imaging
-            let center = image.volume.bounds.center
-            // Schematic shells provide spatial context, NOT scan-derived scalp
-            // or skull segmentation. Never use them for correspondence.
-            let scalp = SCNSphere(radius: 0.105)
-            scalp.segmentCount = 48
-            scalp.firstMaterial = material(.systemTeal, opacity: 0.12)
-            let scalpNode = SCNNode(geometry: scalp)
-            scalpNode.scale = SCNVector3(0.83,1.22,1.0)
-            scalpNode.name = "Schematic scalp, not reconstructed anatomy"
-            if parent.showScalp { model.addChildNode(scalpNode) }
-            let skull = SCNSphere(radius: 0.092)
-            skull.segmentCount = 40
-            skull.firstMaterial = material(.white, opacity: 0.10)
-            let skullNode = SCNNode(geometry: skull)
-            skullNode.scale = SCNVector3(0.83,1.20,0.97)
-            skullNode.name = "Schematic skull, not a CT segmentation"
-            if parent.showSkull { model.addChildNode(skullNode) }
-
-            if image.showSlices3D {
-                for plane in ImagingPlane.allCases {
-                    if let node = makeSlice(plane, center: center) { model.addChildNode(node) }
-                }
+        @objc private func onScale(_ pinch:UIPinchGestureRecognizer) {
+            if pinch.state == .changed,activeAnchor != nil {
+                renderer?.scale(by:Float(pinch.scale))
             }
-            // Threshold surfaces are intentionally labelled as intensity
-            // previews, never as anatomically segmented structures.
-            if image.showIntensity3D, let mesh = image.tissueSurface {
-                model.addChildNode(surfaceNode(mesh, center: center, color: .cyan))
-            }
-            if image.showROI3D, let roi = image.maskSurface {
-                model.addChildNode(surfaceNode(roi, center: center, color: .systemOrange))
-            }
+            pinch.scale = 1
         }
 
-        private func material(_ color: UIColor, opacity: CGFloat) -> SCNMaterial {
-            let m = SCNMaterial()
-            m.diffuse.contents = color
-            m.lightingModel = .physicallyBased
-            m.transparency = opacity
-            m.isDoubleSided = true
-            m.writesToDepthBuffer = false
-            return m
-        }
-
-        private func makeSlice(_ plane: ImagingPlane, center: Point3) -> SCNNode? {
-            let imaging = parent.imaging
-            let raster = SliceRenderer.render(volume: imaging.volume, mask: imaging.mask,
-                                              plane: plane, cursor: imaging.cursorMm,
-                                              window: imaging.window, width: 256, height: 256)
-            let data = Data(raster.rgba) as CFData
-            guard let provider = CGDataProvider(data: data),
-                  let image = CGImage(width: raster.width, height: raster.height,
-                                      bitsPerComponent: 8, bitsPerPixel: 32,
-                                      bytesPerRow: raster.width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                                      provider: provider, decode: nil,
-                                      shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-            let uvPoints = [(0.0,0.0),(1.0,0.0),(0.0,1.0),(1.0,1.0)]
-            let vertices = uvPoints.map { u,v -> SCNVector3 in
-                let p = raster.frame.world(u: u, v: v)
-                return SCNVector3(Float((p.x-center.x)/1000),
-                                  Float((p.y-center.y)/1000), Float((p.z-center.z)/1000))
+        @objc private func onTwist(_ twist:UIRotationGestureRecognizer) {
+            if twist.state == .changed,activeAnchor != nil {
+                renderer?.rotate(dx:0,dy:0,roll:-Float(twist.rotation))
             }
-            let texcoords = [CGPoint(x:0,y:1), CGPoint(x:1,y:1),
-                             CGPoint(x:0,y:0), CGPoint(x:1,y:0)]
-            let geometry = SCNGeometry(sources: [
-                SCNGeometrySource(vertices: vertices),
-                SCNGeometrySource(textureCoordinates: texcoords)
-            ], elements: [SCNGeometryElement(indices: [UInt32(0),1,2,2,1,3],
-                                            primitiveType: .triangles)])
-            let m = SCNMaterial()
-            m.diffuse.contents = UIImage(cgImage: image)
-            m.lightingModel = .constant
-            m.transparency = 0.84
-            m.isDoubleSided = true
-            m.writesToDepthBuffer = false
-            geometry.firstMaterial = m
-            let node = SCNNode(geometry: geometry)
-            node.name = "Actual research \(plane.rawValue) intensity slice"
-            return node
-        }
-
-        private func surfaceNode(_ mesh: PreviewSurface, center: Point3,
-                                 color: UIColor) -> SCNNode {
-            let verts = mesh.verticesMm.map { p in
-                SCNVector3(Float((p.x-center.x)/1000), Float((p.y-center.y)/1000),
-                           Float((p.z-center.z)/1000))
-            }
-            let elements = SCNGeometryElement(indices: (0..<verts.count).map(UInt32.init),
-                                              primitiveType: .triangles)
-            let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: verts)],
-                                       elements: [elements])
-            geometry.firstMaterial = material(color, opacity: 0.26)
-            let result = SCNNode(geometry: geometry)
-            result.name = "Unvalidated intensity or external ROI preview"
-            return result
+            twist.rotation = 0
         }
     }
 }
 
+/// Compact controls; the camera stays visible so placement and LiDAR scan are
+/// not obscured by a full-screen "glass" control panel.
 struct DemoARWorkspace: View {
     @ObservedObject var imaging: MRIPlanningModel
     let active: Bool
-    @State private var enabled = true
-    @State private var showScalp = true
-    @State private var showSkull = true
-    @State private var resetToken = 0
-    @State private var gestureStatus = "Move the device to establish tracking."
-    @State private var showingInstructions = false
+    @State private var handEnabled = false
+    @State private var placed = false
+    @State private var placeRequest = 0
+    @State private var resetRequest = 0
+    @State private var tracking = "Scan a horizontal surface to start."
+    @State private var handStatus = "Hand control off. Touch gestures are always available."
+    @State private var lidar = "Checking ARKit capabilities…"
+    @State private var controls = false
+    @State private var displayMode: VolumeDisplayMode = .composite
+    @State private var threshold = 0.28
+    @State private var opacity = 1.0
 
     var body: some View {
-        ZStack(alignment: .top) {
-            DemoARCanvas(imaging: imaging, handControlEnabled: $enabled,
-                         gestureStatus: $gestureStatus, active: active,
-                         showScalp: showScalp, showSkull: showSkull, resetToken: resetToken)
-                .ignoresSafeArea(edges: .horizontal)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Label("TABLETOP RESEARCH DEMO", systemImage: "cube.transparent")
-                        .font(.caption.weight(.bold))
-                    Spacer()
-                    Button { showingInstructions = true } label: {
-                        Image(systemName: "questionmark.circle")
-                    }
-                }
-                Text(gestureStatus).font(.footnote)
-                HStack(spacing: 12) {
-                    Toggle("Hand controls", isOn: $enabled)
-                    Button("Recenter") { resetToken += 1 }
-                        .buttonStyle(.bordered)
-                }
-                .font(.subheadline)
-                HStack {
-                    Toggle("Scalp shell", isOn: $showScalp)
-                    Toggle("Skull shell", isOn: $showSkull)
-                    Toggle("Scans", isOn: $imaging.showSlices3D)
-                }
-                .font(.caption2)
-                Text("Touch: one-finger rotate · two-finger drag · pinch to scale · twist to roll.")
-                    .font(.caption2)
-                Text("Virtual anatomy and intensity slices are NOT aligned to a patient, physical head, or clinical trajectory.")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+        ZStack {
+            AnchoredVolumeARCanvas(
+                imaging:imaging,trackingStatus:$tracking,gestureStatus:$handStatus,
+                lidarStatus:$lidar,isPlaced:$placed,
+                active:active,handEnabled:handEnabled,
+                placementRequest:placeRequest,resetRequest:resetRequest,
+                displayMode:displayMode,threshold:threshold,opacity:opacity)
+                .ignoresSafeArea(edges:.horizontal)
+            if !placed {
+                Image(systemName:"plus.viewfinder")
+                    .font(.system(size:46,weight:.ultraLight))
+                    .foregroundStyle(.cyan.opacity(0.8))
+                    .allowsHitTesting(false)
             }
-            .padding(14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            VStack(spacing:10) {
+                VStack(alignment:.leading,spacing:7) {
+                    HStack {
+                        Label("ANCHORED VOLUMETRIC AR",systemImage:"cube.transparent")
+                            .font(.caption.bold())
+                        Spacer()
+                        Button { controls = true } label: {
+                            Image(systemName:"slider.horizontal.3")
+                        }.accessibilityLabel("Volume and gesture controls")
+                    }
+                    Text(tracking).font(.footnote)
+                    Text(lidar).font(.caption2).foregroundStyle(.cyan)
+                    Text("Virtual research model · NOT registered to a person")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16))
+                Spacer()
+                VStack(spacing:8) {
+                    HStack(spacing:10) {
+                        Button(placed ? "Reposition" : "Place at reticle") {
+                            if placed { resetRequest += 1 }
+                            else { placeRequest += 1 }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.teal)
+                        Button("Reset rotation") {
+                            // Reposition clears interaction and requests a fresh raycast.
+                            resetRequest += 1
+                        }.buttonStyle(.bordered)
+                    }
+                    Picker("Rendering",selection:$displayMode) {
+                        ForEach(VolumeDisplayMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }.pickerStyle(.segmented)
+                    Text(placed
+                         ? "Touch: one-finger rotate • two-finger move • pinch zoom • twist roll"
+                         : "Aim at a table, move the phone to map it, then tap to place.")
+                        .font(.caption2)
+                }
+                .padding(12)
+                .background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:16))
+            }
             .padding(12)
         }
-        .sheet(isPresented: $showingInstructions) {
+        .environment(\.colorScheme,.dark)
+        .sheet(isPresented:$controls) {
             NavigationStack {
-                List {
-                    Section("Touch controls") {
-                        Text("Drag one finger to rotate in 3D, use two fingers to move, pinch to scale, and twist to roll.")
+                Form {
+                    Section("Volume visualization") {
+                        Picker("Technique",selection:$displayMode) {
+                            ForEach(VolumeDisplayMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        HStack {
+                            Text("Threshold")
+                            Slider(value:$threshold,in:0.01...0.95)
+                        }
+                        HStack {
+                            Text("Density")
+                            Slider(value:$opacity,in:0.20...3.0)
+                        }
+                        Text("Direct volume compositing samples the actual image intensities. MIP projects maximum intensity. Surface mode displays an intensity threshold, not segmented anatomy.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    Section("In-air hand controls") {
-                        Text("Point the rear camera at your hands. A thumb-to-index pinch with one hand moves the display in the image plane. Two pinched hands can change scale and rotation.")
-                        Text("Vision only observes 2D hand keypoints. It does not measure actual 3D hand depth or surgical-grade pose. Good lighting, unobstructed hands, and a stable AR camera are required.")
+                    Section("Hand detection") {
+                        Toggle("Enable rear-camera pinch gestures",isOn:$handEnabled)
+                        Text(handStatus).font(.caption).foregroundStyle(.secondary)
+                        Text("One pinched hand moves the model relative to its AR anchor; two pinched hands scale and rotate. Detection uses 2D Vision hand landmarks, not 3D hand tracking. Lag or occlusion can still occur. Use touch for precision.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    Section("Scientific limitations") {
-                        Text("Schematic scalp/skull layers are illustrative and not reconstructed from medical images. CT/MRI planes correspond only to the currently selected volume. Registration and anatomical accuracy are unvalidated.")
+                    Section("Tracking and placement") {
+                        Text(lidar)
+                        Text("LiDAR scene reconstruction and smoothed depth are enabled only on supported devices. The volume is placed using an explicit ARKit horizontal-surface raycast and ARAnchor; no camera-relative placement fallback exists.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Reposition on another surface") { resetRequest += 1; controls=false }
+                    }
+                    Section {
+                        Text("Research visualization only: no clinical registration, verified skull segmentation, surgical trajectories or positioning accuracy.")
+                            .font(.caption).foregroundStyle(.orange)
                     }
                 }
-                .navigationTitle("Demo Controls")
+                .navigationTitle("Volume AR Controls")
                 .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { showingInstructions = false }
+                    ToolbarItem(placement:.confirmationAction) {
+                        Button("Done") { controls = false }
                     }
                 }
             }
@@ -459,36 +455,52 @@ struct DemoARWorkspace: View {
 }
 
 struct VirtualStudioWorkspace: View {
-    @ObservedObject var imaging: MRIPlanningModel
+    @ObservedObject var imaging:MRIPlanningModel
+    @State private var mode:VolumeDisplayMode = .composite
+    @State private var threshold = 0.28
+    @State private var opacity = 1.0
 
-    var body: some View {
-        VStack(spacing: 10) {
-            TrajectorySceneView(volume: imaging.volume, revision: imaging.volumeRevision,
-                                maskRevision: imaging.maskRevision, mask: imaging.mask,
-                                cursorMm: imaging.cursorMm, window: imaging.window,
-                                tissueSurface: imaging.tissueSurface,
-                                maskSurface: imaging.maskSurface, showSlices: imaging.showSlices3D,
-                                showTissue: imaging.showIntensity3D, showMask: imaging.showROI3D,
-                                entryMm: imaging.entryMm, targetMm: imaging.targetMm,
-                                tipMm: imaging.path.atDepth(imaging.depthMm))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack {
-                Toggle("Slices", isOn: $imaging.showSlices3D)
-                Toggle("Intensity surface", isOn: $imaging.showIntensity3D)
+    var body:some View {
+        VStack(spacing:0) {
+            ZStack(alignment:.topLeading) {
+                VolumeStudioCanvas(imaging:imaging,displayMode:$mode,
+                                   threshold:$threshold,opacity:$opacity)
+                VStack(alignment:.leading,spacing:4) {
+                    Text("3D VOXEL VOLUME").font(.caption.bold()).tracking(1)
+                    Text(imaging.volume.description).font(.caption2)
+                        .lineLimit(2).foregroundStyle(.secondary)
+                }
+                .padding(11)
+                .background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:12))
+                .padding(12)
             }
-            .font(.caption)
-            .padding(.horizontal)
-            HStack(spacing: 8) {
-                Text("Illustrative path depth")
-                    .font(.caption)
-                Slider(value: Binding(get: { imaging.depthMm },
-                                      set: { imaging.setDepth($0) }),
-                       in: 0...max(1, imaging.path.lengthMm))
-            }.padding(.horizontal)
-            Text("Camera-free imaging studio. Surface thresholds are not anatomical segmentations. Not for surgery or navigation.")
-                .font(.caption2).foregroundStyle(.orange).padding(.horizontal)
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            VStack(spacing:9) {
+                Picker("Volume renderer",selection:$mode) {
+                    ForEach(VolumeDisplayMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }.pickerStyle(.segmented)
+                HStack {
+                    Text("Threshold").font(.caption).frame(width:70,alignment:.leading)
+                    Slider(value:$threshold,in:0.01...0.95)
+                    Text(String(format:"%.2f",threshold))
+                        .font(.caption.monospacedDigit()).frame(width:35)
+                }
+                if mode == .composite {
+                    HStack {
+                        Text("Opacity").font(.caption).frame(width:70,alignment:.leading)
+                        Slider(value:$opacity,in:0.20...3.0)
+                    }
+                }
+                Text("Drag to orbit · pinch to zoom · twist to roll. Direct GPU sampling of the imported voxels, not a fake skull mesh.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Text("Research-only imaging preview. No anatomical segmentation or patient registration.")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+            .padding(12)
+            .background(NeuroStyle.card)
         }
-        .padding(.bottom, 10)
         .background(NeuroStyle.canvas)
     }
 }
