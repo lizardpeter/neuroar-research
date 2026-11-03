@@ -350,7 +350,17 @@ struct MRIPlanningView: View {
 
     private let accent=Color(red:0.22,green:0.84,blue:0.92)
 
+    private var supportedVolumeTypes: [UTType] {
+        [UTType(filenameExtension: "nii") ?? .data,
+         UTType(filenameExtension: "gz") ?? .data,
+         UTType(filenameExtension: "nrrd") ?? .data]
+    }
+
     var body: some View {
+        importExportOverlays()
+    }
+
+    private var studyScroll: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
                 header
@@ -486,6 +496,10 @@ struct MRIPlanningView: View {
         .onAppear {
             if model.tissueSurface == nil && !model.surfaceBusy { model.rebuildPreview() }
         }
+    }
+
+    private func importExportOverlays() -> some View {
+        studyScroll
         .sheet(isPresented:$showingDemoLibrary) {
             DemoLibrarySheet { item in
                 showingDemoLibrary = false
@@ -493,11 +507,11 @@ struct MRIPlanningView: View {
             }
         }
         .fileImporter(isPresented:$importingVolume,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data, UTType(filenameExtension:"nrrd") ?? .data]) { result in
+                      allowedContentTypes:supportedVolumeTypes) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:false) }
         }
         .fileImporter(isPresented:$importingMask,
-                      allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data, UTType(filenameExtension:"gz") ?? .data, UTType(filenameExtension:"nrrd") ?? .data]) { result in
+                      allowedContentTypes:supportedVolumeTypes) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:true) }
         }
         .fileImporter(isPresented:$importingPlan,allowedContentTypes:[.json]) { result in
