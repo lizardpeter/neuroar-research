@@ -55,7 +55,8 @@ enum DemoDatasetLoader {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw ImagingError.unsupported("Public dataset download was unavailable")
             }
-            let fileSize = (try? fm.attributesOfItem(atPath: downloaded.path)[.size] as? NSNumber)?.intValue ?? 0
+            let attributes = try fm.attributesOfItem(atPath: downloaded.path)
+            let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
             guard fileSize > 0, fileSize <= NRRDReader.maximumSourceBytes else {
                 throw ImagingError.tooLarge
             }
@@ -77,5 +78,58 @@ enum DemoDatasetLoader {
     private static func verify(_ data: Data, checksum: String) -> Bool {
         let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return actual == checksum
+    }
+}
+
+
+import SwiftUI
+
+struct DemoLibrarySheet: View {
+    let onSelect: (DemoDataset) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Label("Public datasets download only when you select them. SHA-256 checks prevent silent corruption; scanned images are stored in the device cache for repeat viewing.", systemImage: "checkmark.shield")
+                    Text("Each selection replaces the active study and clears old trajectories, landmarks, and masks. No automatic CT-to-MR registration or anatomy segmentation occurs.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Matched CT / T1 / T2 research scans") {
+                    ForEach(DemoDataset.samples.prefix(3)) { dataset in row(dataset) }
+                }
+                Section("Additional head datasets") {
+                    ForEach(DemoDataset.samples.dropFirst(3)) { dataset in row(dataset) }
+                }
+                Section("High-resolution external source") {
+                    Link(destination: URL(string: "https://sci.utah.edu/sci-head-model/")!) {
+                        Label("Utah SCI Head Model · MRI, segmentation and meshes",
+                              systemImage: "arrow.up.right.square")
+                    }
+                    Text("Much larger research data. Use the provider's download and convert/resample compatible 3D scalar NRRD/NIfTI volumes before import. Full-resolution Utah segmentation and meshes are not yet handled by the mobile demo loader.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    Text("Educational research visualization only. Do not use imaging, registration, surface thresholds, or research paths for clinical decisions or navigation.")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
+            }
+            .navigationTitle("Demo Library")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func row(_ item: DemoDataset) -> some View {
+        Button { onSelect(item) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(item.title).font(.headline)
+                    Spacer()
+                    Image(systemName: "arrow.down.circle").foregroundStyle(.teal)
+                }
+                Text(item.detail).font(.caption).foregroundStyle(.secondary)
+            }.padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
     }
 }
