@@ -227,11 +227,18 @@ final class MedicalVolumeRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard isActive, let texture,
-              let pass = view.currentRenderPassDescriptor,
+        guard let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable,
               let command = commandQueue.makeCommandBuffer(),
               let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+        // Always clear the drawable when tracking is lost or a new volume is
+        // uploading; otherwise a stale layer can appear to "skate" in AR.
+        guard isActive, let texture else {
+            encoder.endEncoding()
+            command.present(drawable)
+            command.commit()
+            return
+        }
         var uniform = VolumeGPUUniforms()
         let viewMatrix: simd_float4x4
         let projection: simd_float4x4
