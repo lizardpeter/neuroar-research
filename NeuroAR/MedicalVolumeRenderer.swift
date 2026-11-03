@@ -67,8 +67,10 @@ final class MedicalVolumeRenderer: NSObject, MTKViewDelegate {
     var studioPitch: Float = 0.16
     var studioDistance: Float = 0.48
 
-    init?() {
-        guard let gpu = MTLCreateSystemDefaultDevice(),
+    // The labeled parameter avoids accidentally overriding NSObject.init().
+    // Device setup can fail on unsupported hardware without crashing launch.
+    init?(device requested: MTLDevice? = MTLCreateSystemDefaultDevice()) {
+        guard let gpu = requested,
               let library = gpu.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "neuroVolumeVertex"),
               let fragment = library.makeFunction(name: "neuroVolumeFragment"),
@@ -377,6 +379,7 @@ struct VolumeStudioCanvas: UIViewRepresentable {
     @Binding var displayMode: VolumeDisplayMode
     @Binding var threshold: Double
     @Binding var opacity: Double
+    let active: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -386,16 +389,20 @@ struct VolumeStudioCanvas: UIViewRepresentable {
             renderer.source = .studio
             renderer.configure(view:view,transparent:false)
             context.coordinator.attachGestures(to:view)
-            renderer.load(imaging.volume,revision:imaging.volumeRevision)
+            if active { renderer.load(imaging.volume,revision:imaging.volumeRevision) }
             renderer.window = imaging.window
+            renderer.isActive = active
+            view.isPaused = !active
         }
         return view
     }
 
     func updateUIView(_ view: MTKView, context: Context) {
         guard let renderer=context.coordinator.renderer else { return }
-        renderer.load(imaging.volume,revision:imaging.volumeRevision)
+        if active { renderer.load(imaging.volume,revision:imaging.volumeRevision) }
         renderer.window = imaging.window
+        renderer.isActive = active
+        view.isPaused = !active
         renderer.displayMode = displayMode
         renderer.threshold = Float(threshold)
         renderer.opacity = Float(opacity)
@@ -447,6 +454,8 @@ struct VolumeStudioCanvas: UIViewRepresentable {
 /// Keeps heavy Metal code out of the large SwiftUI MRI editor expression.
 struct EmbeddedVolumePreview: View {
     @ObservedObject var imaging: MRIPlanningModel
+    let active: Bool
+    @State private var onscreen = false
     @State private var mode: VolumeDisplayMode = .composite
     @State private var cutoff = 0.28
     @State private var density = 1.0
@@ -461,9 +470,12 @@ struct EmbeddedVolumePreview: View {
                     .foregroundStyle(.teal)
             }
             VolumeStudioCanvas(imaging:imaging,displayMode:$mode,
-                               threshold:$cutoff,opacity:$density)
+                               threshold:$cutoff,opacity:$density,
+                               active:active && onscreen)
                 .frame(height:335)
                 .clipShape(RoundedRectangle(cornerRadius:12))
+                .onAppear { onscreen = true }
+                .onDisappear { onscreen = false }
             Picker("Method",selection:$mode) {
                 ForEach(VolumeDisplayMode.allCases) { value in
                     Text(value.title).tag(value)

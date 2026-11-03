@@ -336,6 +336,7 @@ final class MRIPlanningModel: ObservableObject {
 struct MRIPlanningView: View {
     @ObservedObject var model:MRIPlanningModel
     @ObservedObject var arController:ARHeadController
+    let active: Bool
     let onOpenAR: () -> Void
     @State private var showingDemoLibrary=false
     @State private var importingVolume=false
@@ -362,7 +363,7 @@ struct MRIPlanningView: View {
 
     private var studyScroll: some View {
         ScrollView {
-            VStack(alignment:.leading,spacing:16) {
+            LazyVStack(alignment:.leading,spacing:16) {
                 header
                 importButtons
                 Label(model.status, systemImage: model.loading ? "arrow.triangle.2.circlepath" : "info.circle")
@@ -403,7 +404,7 @@ struct MRIPlanningView: View {
                 intensityProfileCard
                 researchLandmarksCard
                 planPersistenceCard
-                EmbeddedVolumePreview(imaging:model)
+                EmbeddedVolumePreview(imaging:model,active:active)
                 LegacyGeometryControls(model:model)
                 candidateCard
                 if let analysis=model.maskAnalysis {

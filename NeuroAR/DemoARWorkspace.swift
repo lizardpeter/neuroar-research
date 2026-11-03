@@ -105,6 +105,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
             renderer?.quality = parent.handEnabled
                 ? min(parent.renderSamples, 96) : parent.renderSamples
             renderer?.isActive = parent.active
+            metalOverlay?.isPaused = !parent.active
             if parent.active && !running { startSession() }
             else if !parent.active && running {
                 arView.session.pause()
@@ -500,6 +501,7 @@ struct DemoARWorkspace: View {
 
 struct VirtualStudioWorkspace: View {
     @ObservedObject var imaging:MRIPlanningModel
+    let active: Bool
     @State private var mode:VolumeDisplayMode = .composite
     @State private var threshold = 0.28
     @State private var opacity = 1.0
@@ -508,7 +510,8 @@ struct VirtualStudioWorkspace: View {
         VStack(spacing:0) {
             ZStack(alignment:.topLeading) {
                 VolumeStudioCanvas(imaging:imaging,displayMode:$mode,
-                                   threshold:$threshold,opacity:$opacity)
+                                   threshold:$threshold,opacity:$opacity,
+                                   active:active)
                 VStack(alignment:.leading,spacing:4) {
                     Text("3D VOXEL VOLUME").font(.caption.bold()).tracking(1)
                     Text(imaging.volume.description).font(.caption2)

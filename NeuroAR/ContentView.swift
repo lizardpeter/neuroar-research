@@ -57,6 +57,7 @@ struct ContentView: View {
         TabView(selection: $workspace) {
             NavigationStack {
                 MRIPlanningView(model: imaging, arController: controller,
+                                active: workspace == .study && scenePhase == .active,
                                 onOpenAR: { workspace = .camera })
                     .navigationTitle("MRI workspace")
                     .navigationBarTitleDisplayMode(.inline)
@@ -65,7 +66,9 @@ struct ContentView: View {
             .tag(Workspace.study)
 
             NavigationStack {
-                VirtualStudioWorkspace(imaging: imaging)
+                VirtualStudioWorkspace(
+                    imaging: imaging,
+                    active: workspace == .studio && scenePhase == .active)
                     .navigationTitle("3D Studio")
                     .navigationBarTitleDisplayMode(.inline)
             }
