@@ -12,10 +12,12 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
     @ObservedObject var imaging: MRIPlanningModel
     @Binding var trackingStatus: String
     @Binding var gestureStatus: String
+    @Binding var handTelemetry: HandTelemetry
     @Binding var lidarStatus: String
     @Binding var isPlaced: Bool
     let active: Bool
     let handEnabled: Bool
+    let handMode: OneHandMode
     let placementRequest: Int
     let resetRequest: Int
     let resetTransformRequest: Int
@@ -283,19 +285,31 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
                     report("AR anchor tracked. Volume stays fixed in room coordinates.")
                 }
             }
-            guard activeAnchor != nil,parent.handEnabled,renderer != nil else { return }
-            handInput.process(frame:frame,isEnabled:true) { [weak self] change,message in
-                guard let self,self.parent.active,self.parent.handEnabled,
-                      self.activeAnchor != nil else { return }
+            // Run detection whenever Demo AR is visible, including BEFORE
+            // placement. The HUD can therefore diagnose camera/lighting
+            // problems independently of AR anchors and volume rendering.
+            guard parent.handEnabled else { return }
+            handInput.process(frame:frame,isEnabled:true,mode:parent.handMode) {
+                [weak self] change,telemetry in
+                guard let self,self.parent.active,self.parent.handEnabled else { return }
+                self.parent.handTelemetry = telemetry
+                self.reportHand(telemetry.status)
+                guard self.activeAnchor != nil else { return }
                 switch change {
                 case .none: break
-                case let .translate(x,y):
-                    self.renderer?.moveInView(dx:Float(x*0.14),dy:Float(y*0.14))
-                case let .transform(factor,twist,turn):
+                case let .move(x,y):
+                    self.renderer?.moveInView(dx:Float(x*0.55),
+                                              dy:Float(y*0.55))
+                case let .rotate(x,y,roll):
+                    self.renderer?.rotate(dx:Float(x),dy:Float(y),
+                                          roll:Float(roll))
+                case let .scale(factor):
                     self.renderer?.scale(by:Float(factor))
-                    self.renderer?.rotate(dx:Float(turn),dy:0,roll:Float(twist))
+                case let .smartMove(x,y,factor,roll):
+                    self.renderer?.moveInView(dx:Float(x*0.40),dy:Float(y*0.40))
+                    self.renderer?.scale(by:Float(factor))
+                    self.renderer?.rotate(dx:0,dy:0,roll:Float(roll))
                 }
-                self.reportHand(message)
             }
         }
 
@@ -365,7 +379,9 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
 struct DemoARWorkspace: View {
     @ObservedObject var imaging: MRIPlanningModel
     let active: Bool
-    @State private var handEnabled = false
+    @State private var handEnabled = true
+    @State private var handMode: OneHandMode = .smart
+    @State private var handTelemetry = HandTelemetry()
     @State private var placed = false
     @State private var placeRequest = 0
     @State private var resetRequest = 0
@@ -373,7 +389,7 @@ struct DemoARWorkspace: View {
     @State private var depthOcclusion = true
     @State private var renderSamples: UInt32 = 128
     @State private var tracking = "Scan a horizontal surface to start."
-    @State private var handStatus = "Hand control off. Touch gestures are always available."
+    @State private var handStatus = "Show one free hand to the rear camera."
     @State private var lidar = "Checking ARKit capabilities…"
     @State private var controls = false
     @State private var displayMode: VolumeDisplayMode = .composite
@@ -384,8 +400,9 @@ struct DemoARWorkspace: View {
         ZStack {
             AnchoredVolumeARCanvas(
                 imaging:imaging,trackingStatus:$tracking,gestureStatus:$handStatus,
+                handTelemetry:$handTelemetry,
                 lidarStatus:$lidar,isPlaced:$placed,
-                active:active,handEnabled:handEnabled,
+                active:active,handEnabled:handEnabled,handMode:handMode,
                 placementRequest:placeRequest,resetRequest:resetRequest,
                 resetTransformRequest:resetTransformRequest,
                 depthOcclusion:depthOcclusion,renderSamples:renderSamples,
@@ -408,6 +425,19 @@ struct DemoARWorkspace: View {
                         }.accessibilityLabel("Volume and gesture controls")
                     }
                     Text(tracking).font(.footnote)
+                    HStack(spacing:7) {
+                        Circle()
+                            .fill(handEnabled && handTelemetry.visible
+                                  ? Color.green : Color.gray)
+                            .frame(width:9,height:9)
+                        Text(handEnabled ? handTelemetry.status : "Hand tracking paused")
+                            .font(.caption2).lineLimit(2)
+                        Spacer(minLength:2)
+                        if handEnabled {
+                            Text(String(format:"%.0f ms",handTelemetry.processingMs))
+                                .font(.caption2.monospacedDigit())
+                        }
+                    }
                     Text(lidar).font(.caption2).foregroundStyle(.cyan)
                     Text("Virtual research model · NOT registered to a person")
                         .font(.caption2.weight(.semibold)).foregroundStyle(.orange)
@@ -427,6 +457,17 @@ struct DemoARWorkspace: View {
                             resetTransformRequest += 1
                         }.buttonStyle(.bordered)
                     }
+                    Toggle(isOn:$handEnabled) {
+                        Label("One-hand tracking",systemImage:"hand.raised")
+                            .font(.caption)
+                    }.tint(.teal)
+                    Picker("Hand gesture action",selection:$handMode) {
+                        ForEach(OneHandMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }.pickerStyle(.segmented).disabled(!handEnabled)
+                    Text(handMode.instruction)
+                        .font(.caption2).foregroundStyle(.secondary)
                     Picker("Rendering",selection:$displayMode) {
                         ForEach(VolumeDisplayMode.allCases) { mode in
                             Text(mode.title).tag(mode)
@@ -470,10 +511,32 @@ struct DemoARWorkspace: View {
                         Text("Direct volume compositing samples the actual image intensities. MIP projects maximum intensity. Surface mode displays an intensity threshold, not segmented anatomy.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Section("Hand detection") {
-                        Toggle("Enable rear-camera pinch gestures",isOn:$handEnabled)
-                        Text(handStatus).font(.caption).foregroundStyle(.secondary)
-                        Text("One pinched hand moves the model relative to its AR anchor; two pinched hands scale and rotate. Detection uses 2D Vision hand landmarks, not 3D hand tracking. Lag or occlusion can still occur. Use touch for precision.")
+                    Section("One-hand gestures") {
+                        Toggle("Enable one-hand tracking",isOn:$handEnabled)
+                        Picker("Action",selection:$handMode) {
+                            ForEach(OneHandMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }.pickerStyle(.segmented)
+                        Text(handMode.instruction).font(.caption)
+                        Text(handTelemetry.status).font(.caption)
+                        HStack {
+                            Text("Vision detection")
+                            Spacer()
+                            Text(handTelemetry.visible ? "HAND FOUND" : "NO HAND")
+                                .foregroundStyle(handTelemetry.visible ? .green : .secondary)
+                        }
+                        LabeledContent("Joint confidence",
+                                       value:String(format:"%.0f%%",handTelemetry.confidence*100))
+                        LabeledContent("Thumb / index gap",
+                                       value:String(format:"%.2f × palm",handTelemetry.pinchRatio))
+                        LabeledContent("Detection rate",
+                                       value:String(format:"%.1f fps",handTelemetry.fps))
+                        LabeledContent("Vision processing",
+                                       value:String(format:"%.0f ms",handTelemetry.processingMs))
+                        Text("If it says NO HAND, the camera cannot see sufficient finger landmarks. With a free hand in the rear-camera view, use a bright textured background, keep the entire hand in frame, and avoid motion blur. Detection works before placing the volume.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Smart: one-hand pinch moves the model; approach/retreat changes apparent palm size; wrist twist rolls; open palm rotates. The Move, Rotate and Scale modes offer more predictable pinch-based control.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Section("Tracking and placement") {
