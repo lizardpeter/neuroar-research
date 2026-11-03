@@ -1,9 +1,8 @@
 name: Rust core tests and iOS cross-compilation
 
+# Manual validation only. Publishing is separately manual in testflight.yml.
+# Prevent two macOS jobs per source commit and long auto-queued backlogs.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
