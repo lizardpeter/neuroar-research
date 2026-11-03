@@ -16,6 +16,8 @@
         D32B8D0A2638778B104E917E /* ARHeadController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1958B64E1A8EEF7ED2A0A3D3 /* ARHeadController.swift */; };
         949155C399736BA356997B01 /* DepthUnprojector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FEAEE0B4C9F935BBF46102 /* DepthUnprojector.swift */; };
         ED5515BE9EC5C2E8DC76B514 /* GeometryCore in Frameworks */ = {isa = PBXBuildFile; productRef = E55A8CC6397119BC2F346606 /* GeometryCore */; };
+        A7F2BC890000000000000001 /* DemoARWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F2BC890000000000000002 /* DemoARWorkspace.swift */; };
+        A7F2BC890000000000000003 /* DemoDatasetLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
         90A9B1A94224100300010002 /* NaturalHeadTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaturalHeadTracker.swift; sourceTree = "<group>"; };
@@ -29,6 +31,8 @@
         1958B64E1A8EEF7ED2A0A3D3 /* ARHeadController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARHeadController.swift; sourceTree = "<group>"; };
         11FEAEE0B4C9F935BBF46102 /* DepthUnprojector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepthUnprojector.swift; sourceTree = "<group>"; };
         6D795F13C8C22E022040EE00 /* NeuroARResearch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NeuroARResearch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        A7F2BC890000000000000002 /* DemoARWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoARWorkspace.swift; sourceTree = "<group>"; };
+        A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoDatasetLibrary.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXFrameworksBuildPhase section */
         7561BFB015D8F536760CB671 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (ED5515BE9EC5C2E8DC76B514 /* GeometryCore in Frameworks */, ); runOnlyForDeploymentPostprocessing = 0; };
@@ -36,6 +40,8 @@
 /* Begin PBXGroup section */
         EDA6D6223944636B9C5B54AA = {isa = PBXGroup; children = (E54ED815E4F7D7A7177E9F81 /* NeuroAR */, BFE00B156DCFC34C4751A6E5 /* Products */, ); sourceTree = "<group>"; };
         E54ED815E4F7D7A7177E9F81 /* NeuroAR */ = {isa = PBXGroup; children = (
+            A7F2BC890000000000000002 /* DemoARWorkspace.swift */,
+            A7F2BC890000000000000004 /* DemoDatasetLibrary.swift */,
             91FFB074A988279CDEC0BC56 /* NeuroARApp.swift */,
             16260C585190F1B74295BB31 /* ContentView.swift */,
             1958B64E1A8EEF7ED2A0A3D3 /* ARHeadController.swift */,
@@ -74,6 +80,8 @@
 /* End PBXShellScriptBuildPhase section */
 /* Begin PBXSourcesBuildPhase section */
         BCE16DD0260827ECF338C787 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+            A7F2BC890000000000000001 /* DemoARWorkspace.swift in Sources */,
+            A7F2BC890000000000000003 /* DemoDatasetLibrary.swift in Sources */,
             E34777DEBF7BA5D8E5CDEFEA /* NeuroARApp.swift in Sources */,
             2A8F5CFFD87674FB2B9862C3 /* ContentView.swift in Sources */,
             D32B8D0A2638778B104E917E /* ARHeadController.swift in Sources */,
