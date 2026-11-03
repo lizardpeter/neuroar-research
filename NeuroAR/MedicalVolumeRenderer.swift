@@ -477,3 +477,53 @@ struct EmbeddedVolumePreview: View {
         }
     }
 }
+
+
+/// Keep the older, geometric annotation preview available for existing
+/// trajectory/ROI workflows, but not confused with direct voxel rendering.
+struct LegacyGeometryControls: View {
+    @ObservedObject var model: MRIPlanningModel
+
+    var body: some View {
+        DisclosureGroup("Trajectory / ROI geometric diagnostic") {
+            VStack(alignment:.leading,spacing:8) {
+                TrajectorySceneView(
+                    volume:model.volume,revision:model.volumeRevision,
+                    maskRevision:model.maskRevision,mask:model.mask,
+                    cursorMm:model.cursorMm,window:model.window,
+                    tissueSurface:model.tissueSurface,
+                    maskSurface:model.maskSurface,
+                    showSlices:model.showSlices3D,
+                    showTissue:model.showIntensity3D,
+                    showMask:model.showROI3D,
+                    entryMm:model.entryMm,targetMm:model.targetMm,
+                    tipMm:model.path.atDepth(model.depthMm))
+                    .frame(height:265)
+                    .clipShape(RoundedRectangle(cornerRadius:12))
+                HStack {
+                    Toggle("Slices",isOn:$model.showSlices3D)
+                    Toggle("Threshold surface",isOn:$model.showIntensity3D)
+                }.font(.caption)
+                Toggle("External mask surface",isOn:$model.showROI3D)
+                    .disabled(model.mask == nil).font(.caption)
+                Toggle("Mask explicitly denotes external scalp",isOn:$model.maskIsScalp)
+                    .font(.caption).disabled(model.mask == nil)
+                HStack {
+                    Text("Threshold")
+                    Spacer()
+                    Text(String(format:"%.0f",model.isoThreshold))
+                }.font(.caption)
+                Slider(value:$model.isoThreshold,
+                       in:Double(model.window.lowerBound)...max(
+                           Double(model.window.lowerBound)+1,
+                           Double(model.window.upperBound)),step:1)
+                Button(model.surfaceBusy ? "Extracting…" : "Rebuild diagnostic mesh") {
+                    model.rebuildPreview()
+                }.disabled(model.surfaceBusy)
+                Text(model.surfaceStatus).font(.caption2.monospaced())
+                Text("The intensity cutoff is not a verified tissue, bone, brain, vessel or scalp segmentation. Geometric display/ROI previews have not been validated for navigation.")
+                    .font(.caption2).foregroundStyle(.orange)
+            }.padding(.top,6)
+        }.tint(.teal)
+    }
+}
