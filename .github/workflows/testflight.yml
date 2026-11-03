@@ -82,6 +82,9 @@ jobs:
       - name: Test Swift imaging and registration
         run: swift test --package-path GeometryCore
 
+      - name: Generate app icon assets
+        run: python3 scripts/generate-app-icon.py
+
       - name: Archive without local signing identity
         run: |
           set -euo pipefail
@@ -104,6 +107,9 @@ jobs:
             -authenticationKeyID "$APPSTORE_API_KEY_ID" \
             -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
             archive
+
+      - name: Validate release archive metadata before Apple upload
+        run: python3 scripts/validate-ios-bundle.py .build/NeuroARResearch.xcarchive/Products/Applications/NeuroARResearch.app "$APPSTORE_BUNDLE_ID"
 
       - name: Prepare automatic cloud-signing export options
         run: |

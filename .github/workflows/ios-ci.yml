@@ -46,6 +46,12 @@ jobs:
       - name: Test cross-platform MRI geometry and importers
         run: swift test --package-path GeometryCore
 
+      - name: Generate deterministic app icon assets
+        run: python3 scripts/generate-app-icon.py
+
+      - name: Validate generated icon metadata
+        run: python3 -m json.tool NeuroAR/Assets.xcassets/AppIcon.appiconset/Contents.json >/dev/null
+
       - name: Resolve dependencies
         run: xcodebuild -resolvePackageDependencies -project NeuroARResearch.xcodeproj -scheme NeuroARResearch
 
