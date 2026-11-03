@@ -1,57 +1,34 @@
-# NeuroAR public GitHub + private TestFlight setup
+# NeuroAR: GitHub is connected — finish Apple TestFlight setup
 
-**Scope:** public source, unsigned simulator builds, manually gated Apple signing, direct TestFlight upload. No signed IPA/archive published to GitHub Actions artifacts or Releases. This remains unvalidated research-only software, not for clinical navigation or treatment.
+**Status (2026-11-03):** The public repository `lizardpeter/neuroar-research` now contains the Swift iOS project, GeometryCore, RustCore, synthetic-only sample data, and GitHub Actions workflows. **You do not need to upload the code again.**
 
-## What the repository owner does
+## What is already done
 
-1. At <https://github.com/new>, create **`neuroar-research`** as a **Public** repository. Leave **Add a README**, `.gitignore`, and **license** unchecked; they are included or should be chosen deliberately later. Use `main` as the default branch. Upload/push the project contents preserving `.github/workflows/` (see commands below).
-2. On GitHub open **Settings → Environments → New environment → `testflight`**. Set **Deployment branches and tags → Selected branches and tags → `main`**. If available, add required reviewers (not yourself alone if GitHub prohibits self-approval). The workflow independently checks `refs/heads/main`.
-3. Set **Settings → Branches / Rulesets** to protect `main` (at least require review for workflow changes when collaborators are added). Avoid accepting unreviewed third-party workflow changes. Keep **Actions → General → Workflow permissions** at read-only by default.
-4. In [Apple Developer](https://developer.apple.com/programs/enroll/) confirm that your team belongs to the **paid Apple Developer Program**; TestFlight distribution cannot run with free Personal Team provisioning.
-5. Register an explicit App ID / bundle identifier in Apple's Certificates, Identifiers & Profiles, and create an app with the *exact same* bundle ID at [App Store Connect](https://appstoreconnect.apple.com/). Provide TestFlight test information (beta description, feedback email, primary language), accept required agreements, and configure the intended internal tester.
-6. Set up an Apple Distribution certificate (`.p12` containing its private key) and App Store Connect API key (`.p8`); Apple-Actions provides [setup guidance](https://github.com/Apple-Actions/download-provisioning-profiles) for generating signing assets. **Do not share credentials in chat, repository issues, commits, or files.**
-7. Put **all** signing values into the `testflight` **environment** (not general repository secrets) under **Settings → Environments → testflight**:
+- Public repository on `main`, 33 tracked files.
+- `.github/workflows/ios-ci.yml`: macOS Xcode simulator build plus Swift geometry tests.
+- `.github/workflows/rust-ci.yml`: Rust unit tests and iPhone/simulator static-library cross-compilation.
+- `.github/workflows/testflight.yml`: manually initiated Apple-signed archive and direct TestFlight upload. It does **not** publish the signed IPA to GitHub.
+- Privacy-sensitive file extensions are ignored and a basic checked-file scanner runs in CI. **Never commit patient MRI/DICOM or credentials.**
 
-   | Variables | Description |
-   | --- | --- |
-   | `APPLE_TEAM_ID` | Apple Developer Team ID |
-   | `APPSTORE_BUNDLE_ID` | Exact registered iOS bundle identifier |
-   | `APPSTORE_PROFILE_NAME` | Exact matching App Store provisioning profile name |
-   | `APPSTORE_ISSUER_ID` | App Store Connect API issuer ID |
-   | `APPSTORE_API_KEY_ID` | App Store Connect API key ID |
+## What the repository owner must configure (Apple credentials cannot be created here)
 
-   | Secrets | Description |
-   | --- | --- |
-   | `APPSTORE_API_PRIVATE_KEY` | Complete downloaded `.p8` key text |
-   | `APPSTORE_CERTIFICATES_FILE_BASE64` | Base64-encoded Apple Distribution `.p12` with private key |
-   | `APPSTORE_CERTIFICATES_PASSWORD` | Password used to export `.p12` |
+1. **Apple Developer Program:** Enroll or confirm an active paid membership (TestFlight distribution requires it). <https://developer.apple.com/programs/enroll/>
+2. **Apple app identifier:** Choose a unique bundle ID and register it in Apple Certificates, Identifiers & Profiles. The local debug placeholder is `org.neuroar.research.app`; choose a different ID if it is not available. In <https://appstoreconnect.apple.com/> create an iOS app with the *same* ID, version 0.3, and the necessary beta testing information.
+3. **Signing and access:** Create an Apple Distribution certificate, export its private key as a password-protected `.p12`, create an App Store provisioning profile for that bundle ID, and create an App Store Connect API key with the necessary App Manager permissions. Download and retain the `.p8` privately. Never paste these keys in chat or commit them.
+4. **GitHub protected environment:** Open <https://github.com/lizardpeter/neuroar-research/settings/environments> and create an environment named `testflight`. Restrict deployment branches to `main`. Add reviewer approval if your account/setup supports the reviewer you intend to use. Do not enable 'prevent self-review' when you are the only intended reviewer.
+5. **Environment variables:** Under `testflight` add: `APPLE_TEAM_ID`, `APPSTORE_BUNDLE_ID`, `APPSTORE_PROFILE_NAME` (the exact provisioning profile name), `APPSTORE_ISSUER_ID`, `APPSTORE_API_KEY_ID`.
+6. **Environment secrets:** Under `testflight` add: `APPSTORE_API_PRIVATE_KEY` (full `.p8` content), `APPSTORE_CERTIFICATES_FILE_BASE64` (base64 of the `.p12`), and `APPSTORE_CERTIFICATES_PASSWORD` (the `.p12` export password). **Only enter these in the GitHub UI.**
+7. **Protect `main`:** Configure a ruleset/branch protection and review workflow changes before merging. Ordinary pull requests must never receive signing credentials.
+8. **Verify builds:** Inspect <https://github.com/lizardpeter/neuroar-research/actions> and fix any Xcode or Rust cross-compilation problems. Then manually run **Manually publish NeuroAR to TestFlight** on `main`. Approve environment deployment if configured. Once Apple finishes processing, add yourself as an internal tester and install the build wirelessly from the official TestFlight app.
 
-   This scoping keeps signing secrets out of ordinary PR CI jobs. Do not expose them in any step output or build script.
-8. Wait for **iOS simulator build and geometry tests** on `main` to pass. This is the first actual Apple toolchain compile, and may uncover issues not detected by Swift tests on Linux. Only then choose **Actions → Manually publish NeuroAR to TestFlight → Run workflow** with branch `main`. Approve the protected environment if required. The workflow uploads directly to Apple without publishing a signed IPA to GitHub.
-9. Open TestFlight on your iPhone and accept the internal tester invitation from App Store Connect. Beta processing can require additional app information; internal testing avoids external Beta App Review. No cable or your own Mac is required for this distribution path.
+## Security design
 
-## Upload the local project to the empty repository
+- Only the `testflight` job references Apple signing secrets; it runs on `main` and uses a dedicated environment.
+- The signed `.ipa` is uploaded **directly to Apple**, not added to GitHub workflow artifacts or releases.
+- Public source and the synthetic MRI phantom are safe to publish; real patient imaging data is **never** appropriate in the repository or GitHub Actions.
+- Public standard macOS hosted runners are free, but GitHub has separate limits for artifact storage and other services.
+- All functionality remains **research/education only**. It is not approved or validated for EVD placement, clinical planning, or patient navigation.
 
-Extract the provided zip. In a terminal **inside the `NeuroAR-Research` directory**, run:
+## Swift versus Rust
 
-```bash
-git init
-git branch -M main
-git add .
-bash scripts/check-public-repo.sh
-git commit -m "Initialize NeuroAR research iOS application"
-git remote add origin https://github.com/YOUR_GITHUB_USERNAME/neuroar-research.git
-git push -u origin main
-```
-
-The public repo must contain source and the synthetic demonstration dataset only. No patient-derived scans, patient metadata, credentials, or proprietary assets. This script is a **basic filename guard**, not a substitute for reviewing the entire commit history and code.
-
-## Important security notes
-
-- Never put real patient data in Git or Actions. Clinical DICOM must remain outside this public toolchain.
-- Any collaborator able to change the `main` workflow can potentially alter code executed in a privileged signing job. Keep that branch and the `testflight` environment protected, and review changes before a release.
-- Environment approval is a human gate, not a sandbox. Only run reviewed code from `main`.
-- No IPA, `.xcarchive`, `.p12`, private `.p8`, profiles, or signing logs should be stored as GitHub artifacts.
-- Do not run fork PR code with signing secrets or use `pull_request_target` for untrusted code.
-- Public repository standard hosted runners have no compute-minute billing, but storage and other GitHub services can have separate limits.
-- Native iOS build and LiDAR function are still **unverified** until GitHub Actions compiles the target and it is tested on a real compatible iPhone.
+Use SwiftUI/ARKit/RealityKit for LiDAR access, camera tracking and the iOS experience. Migrate platform-independent imaging/registration/geometry into Rust incrementally, with fixed C ABI functions or an XCFramework after Xcode CI validates the baseline. `RustCore` is currently a small proof-of-cross-compilation and **is not linked into the app yet**.
