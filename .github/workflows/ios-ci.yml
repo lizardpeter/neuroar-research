@@ -40,6 +40,9 @@ jobs:
       - name: Test Rust core
         run: cargo test --manifest-path RustCore/Cargo.toml --locked
 
+      - name: Check App Store Connect preflight script syntax
+        run: node --check scripts/check-appstore-setup.mjs
+
       - name: Test cross-platform MRI geometry and importers
         run: swift test --package-path GeometryCore
 
