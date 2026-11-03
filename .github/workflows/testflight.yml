@@ -1,6 +1,7 @@
 name: Manually publish NeuroAR to TestFlight
 
-# An explicit manual release avoids exposing signing secrets to pull requests.
+# Secure automatic cloud signing. No local Xcode, CSR, .p12 or manually
+# uploaded provisioning profile is required for this attempt.
 on:
   workflow_dispatch:
 
@@ -13,17 +14,21 @@ concurrency:
 
 jobs:
   archive-and-upload:
-    # Prevent a manually dispatched workflow on an arbitrary branch from reaching
-    # the signing environment. Also restrict the environment itself to main.
     if: github.ref == 'refs/heads/main'
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: testflight
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+    env:
+      APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+      APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+      APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID || 'com.lizardpeter.neuroar.research' }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
 
-      - name: Check repository for accidentally included sensitive files
+    steps:
+      - name: Checkout protected source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check public source for sensitive files
         run: bash scripts/check-public-repo.sh
 
       - name: Select stable Xcode
@@ -31,54 +36,48 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Validate signing configuration
+      - name: Validate configuration and protect temporary API key
         env:
-          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
-          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
-          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
-          APPSTORE_CERTIFICATES_FILE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
-          APPSTORE_CERTIFICATES_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID }}
-          APPSTORE_PROFILE_NAME: ${{ vars.APPSTORE_PROFILE_NAME }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          for name in APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID APPSTORE_API_PRIVATE_KEY \
-                      APPSTORE_CERTIFICATES_FILE_BASE64 APPSTORE_CERTIFICATES_PASSWORD \
-                      APPLE_TEAM_ID APPSTORE_BUNDLE_ID APPSTORE_PROFILE_NAME; do
-            if [[ -z "${!name:-}" ]]; then echo "Missing GitHub variable/secret: $name" >&2; exit 1; fi
+          umask 077
+          for name in APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID APPSTORE_BUNDLE_ID APPLE_TEAM_ID ASC_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing $name. See TESTFLIGHT_SETUP.md. No Apple certificates or .p12 are required for this workflow."
+              exit 1
+            fi
           done
+          if [[ ! "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::APPLE_TEAM_ID must be the 10-character Apple Developer Team ID."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/neuroar-private"
+          key_path="$RUNNER_TEMP/neuroar-private/AuthKey.p8"
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          if ! grep -q -- 'BEGIN PRIVATE KEY' "$key_path"; then
+            echo "::error::APPSTORE_API_PRIVATE_KEY must contain the full .p8 file, including its header and footer."
+            exit 1
+          fi
+          echo "ASC_AUTH_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          echo "App Store Connect credentials are present; key contents will not be printed."
 
-      - name: Install native Rust toolchain for iPhone archive
+      - name: Confirm app record exists in App Store Connect
+        run: node scripts/check-appstore-setup.mjs
+
+      - name: Install Rust for iOS
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
 
-      - name: Test Rust core
+      - name: Test Rust geometry
         run: cargo test --manifest-path RustCore/Cargo.toml --locked
 
-      - name: Run core validation suite
+      - name: Test Swift imaging and registration
         run: swift test --package-path GeometryCore
 
-      - name: Import Apple Distribution certificate
-        uses: Apple-Actions/import-codesign-certs@v7
-        with:
-          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
-          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
-
-      - name: Download App Store provisioning profile
-        uses: Apple-Actions/download-provisioning-profiles@v7
-        with:
-          bundle-id: ${{ vars.APPSTORE_BUNDLE_ID }}
-          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
-
-      - name: Archive signed iOS app
-        env:
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID }}
-          APPSTORE_PROFILE_NAME: ${{ vars.APPSTORE_PROFILE_NAME }}
+      - name: Archive without local signing identity
         run: |
           set -euo pipefail
           mkdir -p .build
@@ -90,53 +89,57 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath .build/NeuroARResearch.xcarchive \
             -derivedDataPath .build/DerivedData \
-            "PRODUCT_BUNDLE_IDENTIFIER=${APPSTORE_BUNDLE_ID}" \
-            "DEVELOPMENT_TEAM=${APPLE_TEAM_ID}" \
-            "PROVISIONING_PROFILE_SPECIFIER=${APPSTORE_PROFILE_NAME}" \
-            "CURRENT_PROJECT_VERSION=${GITHUB_RUN_NUMBER}" \
-            CODE_SIGN_STYLE=Manual \
-            'CODE_SIGN_IDENTITY=Apple Distribution' \
-            archive 2>&1 | tee "$RUNNER_TEMP/ios-archive.log"
+            "PRODUCT_BUNDLE_IDENTIFIER=$APPSTORE_BUNDLE_ID" \
+            "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" \
+            "CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_AUTH_KEY_PATH" \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
+            archive
 
-      - name: Export signed IPA
-        env:
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          APPSTORE_BUNDLE_ID: ${{ vars.APPSTORE_BUNDLE_ID }}
-          APPSTORE_PROFILE_NAME: ${{ vars.APPSTORE_PROFILE_NAME }}
+      - name: Prepare automatic cloud-signing export options
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os, plistlib
-          payload = {
-              'method': 'app-store-connect',
-              'destination': 'export',
-              'signingStyle': 'manual',
-              'teamID': os.environ['APPLE_TEAM_ID'],
-              'provisioningProfiles': {
-                  os.environ['APPSTORE_BUNDLE_ID']: os.environ['APPSTORE_PROFILE_NAME']
-              },
-              'stripSwiftSymbols': True,
-              'uploadSymbols': True,
-              'manageAppVersionAndBuildNumber': False,
+          options = {
+              "method": "app-store-connect",
+              "destination": "upload",
+              "signingStyle": "automatic",
+              "teamID": os.environ["APPLE_TEAM_ID"],
+              "manageAppVersionAndBuildNumber": False,
+              "stripSwiftSymbols": True,
+              "uploadSymbols": True,
           }
-          with open(os.path.join(os.environ['RUNNER_TEMP'],'ExportOptions.plist'),'wb') as f:
-              plistlib.dump(payload,f)
+          path = os.path.join(os.environ["RUNNER_TEMP"], "NeuroARExportOptions.plist")
+          with open(path, "wb") as out:
+              plistlib.dump(options, out)
+          print("Configured automatic cloud signing and direct App Store Connect upload.")
           PY
-          xcodebuild -exportArchive \
+
+      - name: Cloud-sign and upload directly to TestFlight
+        run: |
+          set -euo pipefail
+          mkdir -p .build/Export
+          xcodebuild \
+            -exportArchive \
             -archivePath .build/NeuroARResearch.xcarchive \
             -exportPath .build/Export \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            2>&1 | tee "$RUNNER_TEMP/ios-export.log"
-          test -s .build/Export/NeuroARResearch.ipa
+            -exportOptionsPlist "$RUNNER_TEMP/NeuroARExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_AUTH_KEY_PATH" \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
+          echo "Xcode export/upload finished. Confirm processing and internal TestFlight availability in App Store Connect."
 
-      - name: Upload IPA to TestFlight (no App Store public release)
-        uses: Apple-Actions/upload-testflight-build@v5
-        with:
-          app-path: .build/Export/NeuroARResearch.ipa
-          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      - name: Delete temporary signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/neuroar-private/AuthKey.p8"
+          rm -f "$RUNNER_TEMP/NeuroARExportOptions.plist"
 
-      # Do not upload signed IPAs, archives, signing profiles, certificates,
-      # or signing logs as public repository artifacts. The GitHub Actions log
-      # remains available to repository maintainers for troubleshooting.
+      # Intentionally no upload-artifact step. A signed app, .p8, certificate,
+      # provisioning profile, or export log must never be published by public CI.
