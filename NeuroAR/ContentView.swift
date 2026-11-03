@@ -43,7 +43,7 @@ extension View {
     func neuroFloatingGlass() -> some View { modifier(AdaptiveFloatingGlass()) }
 }
 
-private enum Workspace: Hashable { case study, camera, validation }
+private enum Workspace: Hashable { case study, studio, tabletop, camera, validation }
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -63,6 +63,23 @@ struct ContentView: View {
             }
             .tabItem { Label("Study", systemImage: "square.stack.3d.up") }
             .tag(Workspace.study)
+
+            NavigationStack {
+                VirtualStudioWorkspace(imaging: imaging)
+                    .navigationTitle("3D Studio")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label("Studio", systemImage: "cube.transparent") }
+            .tag(Workspace.studio)
+
+            NavigationStack {
+                DemoARWorkspace(imaging: imaging,
+                                active: workspace == .tabletop && scenePhase == .active)
+                    .navigationTitle("Tabletop AR")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .tabItem { Label("Demo AR", systemImage: "hand.draw") }
+            .tag(Workspace.tabletop)
 
             NavigationStack {
                 LiveARWorkspace(controller: controller,
