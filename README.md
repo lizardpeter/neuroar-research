@@ -83,9 +83,17 @@ The iOS source is **Swift syntax parsed**, but **this environment has no Xcode o
 
 ## CI and no-cable iPhone installation
 
-The GitHub Actions workflows are now **committed to the public repository**. Follow `GITHUB_PUBLIC_SETUP.md` and `TESTFLIGHT_SETUP.md` to create an Apple Developer app, signing identity, provisioning profile, API key, and GitHub variables/secrets. Ordinary pushes build on a hosted Mac against iOS Simulator without signing. A manually triggered workflow can sign and upload a release to App Store Connect/TestFlight. After TestFlight processing and an invitation, installation on the iPhone works over the air. **Neither a Mac runner execution nor a TestFlight installation has been verified for this package.** Do not upload patient images or secrets to GitHub.
+The included workflows are **not yet deployed**. Follow `TESTFLIGHT_SETUP.md` to create an Apple Developer app, signing identity, provisioning profile, API key, and GitHub variables/secrets. Ordinary pushes build on a hosted Mac against iOS Simulator without signing. A manually triggered workflow can sign and upload a release to App Store Connect/TestFlight. After TestFlight processing and an invitation, installation on the iPhone works over the air. **Neither a Mac runner execution nor a TestFlight installation has been verified for this package.** Do not upload patient images or secrets to GitHub.
 
 
 ## Swift + Rust architecture (next step)
 
 The first cross-platform Rust static library is in `RustCore/` with a C ABI, a native unit-test suite, and a separate macOS/iOS cross-compilation workflow. **It is not yet linked into the iOS application**; Swift remains the tested MRI imaging implementation. Native ARKit/LiDAR/SwiftUI will remain in Swift while MRI decoding, geometry, and registration may be migrated to Rust incrementally after CI passes. See `RustCore/README.md`.
+
+
+## v0.5 development milestone — explicit MRI-to-AR handoff and research plan files
+
+- MRI planner can annotate named landmarks and transfer its **current** manual line and coarse image/ROI surfaces to the AR camera after explicit research-only acknowledgment. Every transfer requires new physical landmark capture. Importing a different MRI invalidates the linked AR study.
+- Export/import versioned research annotations as JSON (no image pixels). A strict voxel and physical-grid matching check rejects an archive belonging to another scan. The voxel-derived fingerprint and user labels mean exports should **not** be treated as de-identified patient data.
+- Display a sampled MRI intensity profile and imported ROI overlap indicators along a manually drawn line; these do not identify safe trajectories or anatomical tissue.
+- See [`DEVELOPMENT_STATUS.md`](DEVELOPMENT_STATUS.md) for implementation scope, validation gaps and the next device-validation milestones.

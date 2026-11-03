@@ -41,7 +41,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented).padding(.horizontal,14).padding(.bottom,8)
                 if workspace == 0 {
-                    MRIPlanningView(model:imaging,arController:controller)
+                    MRIPlanningView(model:imaging,arController:controller,onOpenAR:{ workspace=1 })
                 } else {
                 ZStack(alignment:.top) {
                     GeometryReader { camera in
@@ -90,6 +90,9 @@ struct ContentView: View {
             .foregroundStyle(.white)
         }
         .preferredColorScheme(.dark)
+        .onChange(of:imaging.volumeRevision) { _, _ in
+            controller.invalidatePlanningLink()
+        }
         .fileImporter(isPresented:$importingStudy,allowedContentTypes:[.json]) { result in
             if case let .success(url)=result { controller.importStudy(url:url) }
         }
@@ -170,7 +173,9 @@ struct ContentView: View {
                 }
                 Divider()
                 Text("Validation status").font(.caption.bold()).foregroundStyle(.orange)
-                Text("The separate MRI planner imports NIfTI voxels, but AR does not automatically use those voxels or link them to this study. No auto segmentation, vessel avoidance, ICP, head-motion correction, or validated target accuracy. Never use for EVD placement or instrument guidance.")
+                Text(controller.plannerLinked
+                     ? "Current MRI planning study and selected coarse 3D surfaces are linked. Landmark alignment is manually fitted; image-target accuracy, movement tracking and suitability for EVD navigation have NOT been validated."
+                     : "Only the synthetic phantom or separately imported JSON/USDZ study is loaded. Open MRI Planner to explicitly transfer an MRI study and its landmarks. No automatic head registration or clinical trajectory validation.")
                     .font(.caption2).foregroundStyle(.gray)
             }
             .padding(16)

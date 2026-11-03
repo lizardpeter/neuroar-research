@@ -31,11 +31,56 @@ final class MRIPlanningModel: ObservableObject {
     @Published var editMode: EditMode = .cursor
     @Published private(set) var depthMm = 30.0
     @Published private(set) var candidates:[StudyTrajectory]=[]
+    @Published private(set) var landmarks:[StudyLandmark]=[]
     @Published private(set) var selectedCandidateID:String?
     @Published private(set) var lowWindow: Float = 0
     @Published private(set) var highWindow: Float = 200
     @Published private(set) var loading = false
     @Published private(set) var status = "Synthetic anatomical phantom. Import a NIfTI scan to start a study."
+
+    func addLandmark(name: String) {
+        guard landmarks.count < 64 else { status="Maximum of 64 research landmarks reached."; return }
+        guard volume.nearest(at:cursorMm) != nil else { status="Select a point within the image first."; return }
+        let label = String(name.trimmingCharacters(in:.whitespacesAndNewlines).prefix(100))
+        guard !label.isEmpty else { status="Enter a landmark label first."; return }
+        landmarks.append(StudyLandmark(id:UUID().uuidString,name:label,pointMm:cursorMm))
+        status="Landmark saved at MRI crosshair. Verify its physical counterpart before AR registration."
+    }
+
+    func removeLandmark(id:String) {
+        landmarks.removeAll { $0.id == id }
+    }
+
+    func planArchive() throws -> PlanningArchive {
+        try PlanningArchive(volume:volume,cursorMm:cursorMm,entryMm:entryMm,
+                            targetMm:targetMm,displayedDepthMm:depthMm,
+                            landmarks:landmarks,candidates:candidates)
+    }
+
+    func importPlan(_ archive: PlanningArchive) throws {
+        // Validate FIRST; a mismatching image must not modify an active plan.
+        try archive.validate(for:volume)
+        cursorMm=archive.cursorMm
+        entryMm=archive.entryMm
+        targetMm=archive.targetMm
+        depthMm=archive.displayedDepthMm
+        landmarks=archive.landmarks
+        candidates=archive.candidates
+        selectedCandidateID=nil
+        status="Plan annotations restored against matching MRI voxels. No physical-head registration was restored."
+    }
+
+    func report(_ message:String) { status=message }
+
+    func researchARStudy() -> Study? {
+        guard landmarks.count >= 3, path.lengthMm > 1e-6,
+              (landmarks.map { $0.pointMm }).allSatisfy(\.allFinite) else { return nil }
+        let primary=StudyTrajectory(id:UUID().uuidString,name:"Current manually drawn line",entryMm:entryMm,targetMm:targetMm)
+        let listed=[primary] + candidates
+        return Study(id:UUID().uuidString,
+                     title:volume.isSynthetic ? "Synthetic MRI planner" : "Imported MRI · unvalidated head registration",
+                     isSynthetic:volume.isSynthetic,landmarks:landmarks,trajectories:listed)
+    }
 
     func saveCandidate() {
         guard path.lengthMm>0 else { status="Set distinct entry and target points first.";return }
@@ -92,7 +137,7 @@ final class MRIPlanningModel: ObservableObject {
     }
 
     private func replaceImage(with loaded:VoxelVolume) {
-        candidates=[];selectedCandidateID=nil
+        candidates=[];selectedCandidateID=nil;landmarks=[]
         volume=loaded
         mask=nil
         maskRevision += 1
@@ -159,7 +204,7 @@ final class MRIPlanningModel: ObservableObject {
 
     func resetDemo() {
         volume=VoxelVolume.syntheticDemo();mask=nil;maskRevision += 1;cursorMm=Point3(0,0,0)
-        candidates=[];selectedCandidateID=nil
+        candidates=[];selectedCandidateID=nil;landmarks=[]
         entryMm=Point3(30,65,32);targetMm=Point3(5,0,4)
         lowWindow=0;highWindow=200;depthMm=30
         isoThreshold=95
@@ -232,9 +277,15 @@ final class MRIPlanningModel: ObservableObject {
 struct MRIPlanningView: View {
     @ObservedObject var model:MRIPlanningModel
     @ObservedObject var arController:ARHeadController
+    let onOpenAR: () -> Void
     @State private var importingVolume=false
     @State private var importingMask=false
     @State private var importingDICOM=false
+    @State private var importingPlan=false
+    @State private var exportingPlan=false
+    @State private var exportDocument: ResearchPlanFile?
+    @State private var landmarkName = ""
+    @State private var arConfirmation=false
     @State private var showAdvanced=false
 
     private let accent=Color(red:0.22,green:0.84,blue:0.92)
@@ -270,6 +321,9 @@ struct MRIPlanningView: View {
 
                 trajectoryCard
                 depthCard
+                intensityProfileCard
+                researchLandmarksCard
+                planPersistenceCard
                 VStack(alignment:.leading,spacing:9) {
                     HStack {
                         Text("3D MRI · RESEARCH PREVIEW").font(.caption.bold()).tracking(0.8)
@@ -364,6 +418,36 @@ struct MRIPlanningView: View {
         .fileImporter(isPresented:$importingMask,
                       allowedContentTypes:[UTType(filenameExtension:"nii") ?? .data]) { result in
             if case let .success(url)=result { model.loadVolume(at:url,asMask:true) }
+        }
+        .fileImporter(isPresented:$importingPlan,allowedContentTypes:[.json]) { result in
+            do {
+                let url=try result.get()
+                let access=url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let plan=try JSONDecoder().decode(PlanningArchive.self,from:Data(contentsOf:url))
+                try model.importPlan(plan)
+            } catch { model.report("Could not import plan: \(error.localizedDescription)") }
+        }
+        .fileExporter(isPresented:$exportingPlan,document:exportDocument,
+                      contentType:.json,defaultFilename:"neuroar-research-plan") { result in
+            switch result {
+            case .success: model.report("Research plan exported. It contains annotations and a voxel fingerprint, not image pixels; do not treat it as de-identified.")
+            case .failure(let error): model.report("Plan export failed: \(error.localizedDescription)")
+            }
+            exportDocument=nil
+        }
+        .confirmationDialog("Unvalidated research-only AR overlay",isPresented:$arConfirmation,
+                            titleVisibility:.visible) {
+            Button("Continue to AR demonstration") {
+                guard let study=model.researchARStudy() else { return }
+                arController.importPlanningStudy(study:study,
+                                                 intensitySurface:model.showIntensity3D ? model.tissueSurface : nil,
+                                                 roiSurface:model.showROI3D ? model.maskSurface : nil,
+                                                 displayedDepthMm:model.depthMm)
+                onOpenAR()
+            }
+        } message: {
+            Text("MRI landmarks must correspond to identifiable physical points. The overlay does not have verified target accuracy, patient-motion tracking, or suitability for EVD placement.")
         }
         .fileImporter(isPresented:$importingDICOM,
                       allowedContentTypes:[UTType(filenameExtension:"dcm") ?? .data],
@@ -466,6 +550,78 @@ struct MRIPlanningView: View {
             }
         }
         .padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+    }
+
+    private var intensityProfileCard: some View {
+        let samples=PathSampler.sample(model.path,volume:model.volume,mask:model.mask,spacingMm:2.0)
+        return VStack(alignment:.leading,spacing:8) {
+            HStack {
+                Text("MRI INTENSITY ALONG MANUAL LINE").font(.caption.bold()).tracking(0.8)
+                Spacer()
+                Text("~2 mm samples").font(.caption2.monospaced()).foregroundStyle(.gray)
+            }
+            PathIntensityGraph(samples:samples,depthMm:model.depthMm)
+                .frame(height:126)
+                .background(.black.opacity(0.3),in:RoundedRectangle(cornerRadius:8))
+            HStack(spacing:12) {
+                Label("MRI intensity",systemImage:"waveform.path").foregroundStyle(.cyan)
+                Label("ROI overlap samples",systemImage:"circle.fill").foregroundStyle(.orange)
+                Label("Depth",systemImage:"line.diagonal").foregroundStyle(.yellow)
+            }.font(.system(size:9))
+            Text("Sampled signal values and mask overlaps only. Tissue identity, vessel-free clearance, and clinical path safety CANNOT be inferred from this graph.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+    }
+
+    private var researchLandmarksCard: some View {
+        VStack(alignment:.leading,spacing:9) {
+            Text("MRI-TO-HEAD RESEARCH LANDMARKS").font(.caption.bold()).tracking(0.8)
+            Text("Set Crosshair mode, select a recognizable MRI surface landmark in the slices, and add its exact physical counterpart in capture order. Three or more noncollinear points are required. These are manual annotations, not automatic face tracking.")
+                .font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                TextField("Landmark name (e.g., point A)",text:$landmarkName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add at crosshair") {
+                    model.addLandmark(name:landmarkName.isEmpty ? "Landmark \(model.landmarks.count+1)" : landmarkName)
+                    landmarkName=""
+                }.buttonStyle(.bordered)
+            }.font(.caption)
+            ForEach(model.landmarks.indices,id:\.self) { i in
+                let landmark=model.landmarks[i]
+                HStack(spacing:8) {
+                    Text("\(i+1). \(landmark.name)").font(.caption)
+                    Spacer()
+                    Text(String(format:"%.0f, %.0f, %.0f",landmark.pointMm.x,landmark.pointMm.y,landmark.pointMm.z))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    Button(role:.destructive) { model.removeLandmark(id:landmark.id) } label: {
+                        Image(systemName:"trash").font(.caption)
+                    }
+                }
+            }
+            Button("Transfer this MRI study to live AR") { arConfirmation=true }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.researchARStudy() == nil || model.loading)
+            Text("Uses the current MRI coordinate frame and selected preview surfaces. You will need to recapture corresponding head landmarks in the AR camera. No prior registration is reused.")
+                .font(.caption2).foregroundStyle(.orange)
+        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+    }
+
+    private var planPersistenceCard: some View {
+        VStack(alignment:.leading,spacing:9) {
+            Text("SAVE / RESTORE ANNOTATIONS").font(.caption.bold()).tracking(0.8)
+            HStack {
+                Button("Export plan JSON") {
+                    do {
+                        let archive=try model.planArchive()
+                        exportDocument=ResearchPlanFile(bytes:try JSONEncoder().encode(archive))
+                        exportingPlan=true
+                    } catch { model.report("Plan export rejected: \(error.localizedDescription)") }
+                }.buttonStyle(.bordered)
+                Button("Import plan JSON") { importingPlan=true }.buttonStyle(.bordered)
+            }
+            Text("The plan contains coordinates, labels, and a voxel fingerprint, but not MRI pixels. It requires identical voxel data and orientation to reopen and never restores AR registration. It is not guaranteed anonymous; do not put patient-identifying labels in it.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
     }
 
     private var depthCard:some View {
@@ -577,5 +733,60 @@ private struct SliceTile: View {
                        bytesPerRow:raster.width*4,space:CGColorSpaceCreateDeviceRGB(),
                        bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.premultipliedLast.rawValue),
                        provider:provider,decode:nil,shouldInterpolate:false,intent:.defaultIntent)
+    }
+}
+
+/// Apple Files document. Import/export is explicitly user initiated; there is
+/// no remote upload, background transfer, or network patient-data service.
+struct ResearchPlanFile: FileDocument {
+    static let readableContentTypes: [UTType] = [.json]
+    var bytes: Data
+    init(bytes:Data) { self.bytes=bytes }
+    init(configuration:ReadConfiguration) throws {
+        guard let bytes=configuration.file.regularFileContents else { throw CocoaError(.fileReadCorruptFile) }
+        self.bytes=bytes
+    }
+    func fileWrapper(configuration:WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents:bytes)
+    }
+}
+
+private struct PathIntensityGraph: View {
+    let samples:[PathSample]
+    let depthMm:Double
+
+    var body: some View {
+        GeometryReader { canvas in
+            let valid=samples.compactMap(\.intensity).filter(\.isFinite)
+            let lower=valid.min() ?? 0
+            let upper=max(lower+0.001,valid.max() ?? 1)
+            let total=max(0.001,samples.last?.distanceMm ?? 0.001)
+            let size=canvas.size
+            let rect=CGRect(x:8,y:8,width:max(1,size.width-16),height:max(1,size.height-16))
+            ZStack {
+                Path { p in
+                    var drawing=false
+                    for item in samples {
+                        guard let v=item.intensity,v.isFinite else { drawing=false;continue }
+                        let x=rect.minX+CGFloat(item.distanceMm/total)*rect.width
+                        let y=rect.maxY-CGFloat((v-lower)/(upper-lower))*rect.height
+                        if !drawing { p.move(to:CGPoint(x:x,y:y));drawing=true }
+                        else { p.addLine(to:CGPoint(x:x,y:y)) }
+                    }
+                }.stroke(.cyan,lineWidth:1.6)
+                Path { p in
+                    for item in samples where item.insideROI {
+                        let x=rect.minX+CGFloat(item.distanceMm/total)*rect.width
+                        p.move(to:CGPoint(x:x,y:rect.maxY-4))
+                        p.addLine(to:CGPoint(x:x,y:rect.maxY))
+                    }
+                }.stroke(.orange,lineWidth:2)
+                Path { p in
+                    let x=rect.minX+CGFloat(min(1,max(0,depthMm/total)))*rect.width
+                    p.move(to:CGPoint(x:x,y:rect.minY));p.addLine(to:CGPoint(x:x,y:rect.maxY))
+                }.stroke(.yellow.opacity(0.85),style:StrokeStyle(lineWidth:1,dash:[3,3]))
+            }
+        }
+        .accessibilityLabel("Research intensity profile along a manually selected trajectory")
     }
 }

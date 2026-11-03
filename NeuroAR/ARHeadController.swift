@@ -16,11 +16,14 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var trackingIsNormal = false
     @Published private(set) var depthMm = 30.0
     @Published private(set) var meshImported = false
+    @Published private(set) var plannerLinked = false
 
     weak var arView: ARView?
     private var root: Entity?
     private var anchor: AnchorEntity?
     private var customMesh: Entity?
+    private var intensityPreview: Entity?
+    private var roiPreview: Entity?
     private var markerAnchors: [AnchorEntity] = []
     private var lastTrackingNormal = false
     private var frameCount = 0
@@ -151,9 +154,58 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
                 return
             }
             study=loaded; selectedIndex=0; depthMm=min(30,loaded.trajectories[0].lengthMm)
-            customMesh=nil; meshImported=false
+            customMesh=nil; intensityPreview=nil; roiPreview=nil
+            plannerLinked=false; meshImported=false
             clearRegistration(reason:"Loaded \(loaded.title). Capture corresponding facial landmarks.")
         } catch { status="Study import error: \(error.localizedDescription)" }
+    }
+
+    /// Explicit bridge from the *same image* used in the MRI planner.
+    /// A fresh landmark registration is mandatory and any prior world-space
+    /// anchor is invalidated. This is visualization, NOT instrument guidance.
+    func importPlanningStudy(study planned:Study, intensitySurface:PreviewSurface?,
+                             roiSurface:PreviewSurface?, displayedDepthMm:Double) {
+        clearRegistration(reason:"MRI planning study linked. Capture the corresponding physical head landmarks in the displayed order. Unvalidated research mode.")
+        study=planned
+        selectedIndex=0
+        depthMm=min(max(0,displayedDepthMm),planned.trajectories.first?.lengthMm ?? 0)
+        customMesh=nil;meshImported=false
+        plannerLinked=true
+        // Bound geometry for phone memory. Coarse previews never establish anatomy.
+        intensityPreview=makePreviewEntity(intensitySurface,color:UIColor.systemGray.withAlphaComponent(0.35))
+        roiPreview=makePreviewEntity(roiSurface,color:UIColor.systemCyan.withAlphaComponent(0.45))
+        if intensityPreview == nil && roiPreview == nil {
+            status += " No segmented 3D surface available; trajectories and landmarks only."
+        }
+    }
+
+    func invalidatePlanningLink() {
+        guard plannerLinked else { return }
+        clearRegistration(reason:"MRI image changed. AR study and registration invalidated; relink the new MRI explicitly.")
+        study = .synthetic
+        selectedIndex = 0
+        depthMm = 30
+        intensityPreview=nil;roiPreview=nil
+        plannerLinked=false
+    }
+
+    private func makePreviewEntity(_ preview:PreviewSurface?,color:UIColor)->Entity? {
+        guard let preview, !preview.verticesMm.isEmpty else { return nil }
+        let limit = min(preview.verticesMm.count/3, 12_000)
+        guard limit > 0 else { return nil }
+        let positions:[SIMD3<Float>] = preview.verticesMm.prefix(limit*3).map { p in
+            SIMD3<Float>(Float(p.x/1000),Float(p.y/1000),Float(p.z/1000))
+        }
+        var meshDescriptor = MeshDescriptor(name:"Unvalidated coarse MRI preview")
+        meshDescriptor.positions = MeshBuffers.Positions(positions)
+        meshDescriptor.primitives = .triangles((0..<positions.count).map { UInt32($0) })
+        do {
+            let mesh = try MeshResource.generate(from:[meshDescriptor])
+            return ModelEntity(mesh:mesh,materials:[SimpleMaterial(color:color,isMetallic:false)])
+        } catch {
+            status="3D AR preview unavailable: \(error.localizedDescription). Landmarks and paths remain available."
+            return nil
+        }
     }
 
     func importMesh(url: URL) {
@@ -207,7 +259,16 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         arView.scene.addAnchor(sceneAnchor)
         anchor=sceneAnchor; root=sceneRoot
 
-        if let customMesh {
+        if plannerLinked {
+            if let intensityPreview {
+                intensityPreview.removeFromParent()
+                sceneRoot.addChild(intensityPreview)
+            }
+            if let roiPreview {
+                roiPreview.removeFromParent()
+                sceneRoot.addChild(roiPreview)
+            }
+        } else if let customMesh {
             customMesh.removeFromParent()
             sceneRoot.addChild(customMesh)
         } else if study.isSynthetic {
