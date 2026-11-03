@@ -11,6 +11,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var selectedIndex = 0
     @Published private(set) var capturedPoints: [Point3] = []
     @Published private(set) var registration: RegistrationResult?
+    @Published private(set) var heldOutSurfaceResidualMeters: Double?
     @Published private(set) var status = "Point the rear camera toward a stationary head."
     @Published private(set) var lidarSupported = false
     @Published private(set) var trackingIsNormal = false
@@ -118,15 +119,21 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
             let sources = study.landmarks.map {
                 Point3($0.pointMm.x/1000,$0.pointMm.y/1000,$0.pointMm.z/1000)
             }
-            let result = try RigidRegistration.fit(sourceMeters:sources,targetMeters:capturedPoints)
+            let report = try LandmarkRegistrationEvaluator.evaluate(sourceMeters:sources,targetMeters:capturedPoints)
+            let result = report.fit
             // A low landmark-fit error does NOT establish clinical target registration accuracy.
             // Thresholds here are demonstration guards, not surgical acceptance criteria.
             guard result.landmarkRMSEmeters <= 0.015 else {
                 clearRegistration(reason:"Landmark fit exceeds the 15 mm demonstration guard. Retake points.")
                 return
             }
+            if let residual=report.heldOutSurfaceResidualMeters, residual > 0.03 {
+                clearRegistration(reason:"Independent surface landmark mismatch >30 mm (demo guard). Retake the entire correspondence set. Not clinical accuracy.")
+                return
+            }
             registration=result
-            status=String(format:"Demo landmark residual %.1f mm (NOT target accuracy).",result.landmarkRMSEmeters*1000)
+            heldOutSurfaceResidualMeters=report.heldOutSurfaceResidualMeters
+            status=String(format:"Demo fit residual %.1f mm; \(report.hasHeldOutPoint ? "last external landmark held out" : "NO independent landmark check"). NOT intracranial accuracy.",result.landmarkRMSEmeters*1000)
             render()
         } catch {
             clearRegistration(reason:"Could not fit landmarks: \(error.localizedDescription)")
@@ -134,7 +141,7 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func clearRegistration(reason: String = "Registration reset. Retake landmarks.") {
-        registration=nil; capturedPoints=[]
+        registration=nil; heldOutSurfaceResidualMeters=nil;capturedPoints=[]
         markerAnchors.forEach { $0.removeFromParent() }
         markerAnchors=[]
         anchor?.removeFromParent(); anchor=nil; root=nil

@@ -106,3 +106,14 @@ non-finite, and inconsistent 3×3 neighborhood depth samples before a landmark
 is accepted. This improves robustness to single-pixel outliers but **does not
 calibrate the camera or establish registration/target accuracy**. Swift core tests
 cover median filtering and inconsistent-depth rejection.
+
+
+### Independent surface-landmark check (development)
+
+With four or more MRI/physical landmark correspondences, the last point is
+*excluded from rigid registration fitting* and reported separately as a held-out
+surface mismatch. That is a useful debugging diagnostic but **not intracranial
+target registration error or proof of clinical navigation accuracy**. A 30 mm
+demo-only guard rejects grossly inconsistent held-out captures. Public API
+constructors are explicitly exported across the GeometryCore / iOS module
+boundary and covered by a non-`@testable` regression test.

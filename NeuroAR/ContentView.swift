@@ -132,9 +132,10 @@ struct ContentView: View {
                     HStack(spacing:18) {
                         metric("LANDMARK FIT",String(format:"%.1f mm",result.landmarkRMSEmeters*1000))
                         metric("WORST RESIDUAL",String(format:"%.1f mm",result.maxLandmarkResidualMeters*1000))
-                        metric("POINTS",String(result.count))
+                        metric("FIT POINTS",String(result.count))
+                        metric("HOLD-OUT",controller.heldOutSurfaceResidualMeters.map { String(format:"%.1f mm",$0*1000) } ?? "Not measured")
                     }
-                    Text("Residuals measure the landmark fit only; they do not measure intracranial target error.")
+                    Text("A fourth or later landmark reserves the final surface point as an independent check. Neither fit nor held-out surface residual measures intracranial target accuracy.")
                         .font(.caption2).foregroundStyle(.orange)
                 }
                 Divider().overlay(Color.gray.opacity(0.3))

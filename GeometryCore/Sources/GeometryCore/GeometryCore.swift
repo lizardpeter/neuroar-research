@@ -132,6 +132,9 @@ public struct StudyLandmark: Codable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let pointMm: Point3
+    public init(id: String, name: String, pointMm: Point3) {
+        self.id=id; self.name=name; self.pointMm=pointMm
+    }
 }
 
 public struct StudyTrajectory: Codable, Identifiable, Sendable {
@@ -140,10 +143,7 @@ public struct StudyTrajectory: Codable, Identifiable, Sendable {
     public var entryMm: Point3
     public var targetMm: Point3
     public init(id: String, name: String, entryMm: Point3, targetMm: Point3) {
-        self.id = id
-        self.name = name
-        self.entryMm = entryMm
-        self.targetMm = targetMm
+        self.id=id; self.name=name; self.entryMm=entryMm; self.targetMm=targetMm
     }
     public var lengthMm: Double { (targetMm-entryMm).norm }
     public func atDepth(_ depthMm: Double) -> Point3 {
@@ -159,6 +159,11 @@ public struct Study: Codable, Sendable {
     public let isSynthetic: Bool
     public let landmarks: [StudyLandmark]
     public var trajectories: [StudyTrajectory]
+    public init(id:String,title:String,isSynthetic:Bool,
+                landmarks:[StudyLandmark],trajectories:[StudyTrajectory]) {
+        self.id=id;self.title=title;self.isSynthetic=isSynthetic
+        self.landmarks=landmarks;self.trajectories=trajectories
+    }
     /// Right(+X), superior(+Y), anterior(+Z), in millimeters.
     public static let synthetic = Study(
         id: "synthetic-education-only", title: "Synthetic anatomy (demo)", isSynthetic: true,
