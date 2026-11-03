@@ -48,6 +48,10 @@ jobs:
               exit 1
             fi
           done
+          if [[ "$APPSTORE_BUNDLE_ID" != "com.pg.neuroar.research" ]]; then
+            echo "::error::APPSTORE_BUNDLE_ID is not com.pg.neuroar.research. Update or delete the outdated testflight environment variable."
+            exit 1
+          fi
           if [[ ! "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
             echo "::error::APPLE_TEAM_ID must be the 10-character Apple Developer Team ID."
             exit 1
