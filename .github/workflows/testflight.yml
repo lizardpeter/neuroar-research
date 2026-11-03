@@ -32,7 +32,7 @@ jobs:
         run: bash scripts/check-public-repo.sh
 
       - name: Select stable Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
 
@@ -67,8 +67,9 @@ jobs:
         run: node scripts/check-appstore-setup.mjs
 
       - name: Install Rust for iOS
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned master commit
         with:
+          toolchain: stable
           targets: aarch64-apple-ios
 
       - name: Test Rust geometry
