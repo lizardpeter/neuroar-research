@@ -1,163 +1,252 @@
 import Foundation
 import ARKit
 import Vision
-import ImageIO
 import CoreGraphics
+import QuartzCore
 
-/// Image-plane hand control, not world-space skeletal tracking.
-/// Runs on a background queue, reuses the Vision request, rejects weak points,
-/// and requires a stable pinch before emitting a manipulation delta.
-final class VisionHandInput {
+enum OneHandMode: String, CaseIterable, Identifiable {
+    case smart = "Smart"
+    case move = "Move"
+    case rotate = "Rotate"
+    case scale = "Scale"
+    var id: String { rawValue }
+    var instruction: String {
+        switch self {
+        case .smart: return "Pinch and move to grab; approach/retreat to resize; wrist twist to roll. Open palm and move to rotate."
+        case .move: return "Pinch thumb and index; move the pinched hand to reposition."
+        case .rotate: return "Pinch and move left/right/up/down to orbit; twist wrist to roll."
+        case .scale: return "Pinch and move UP to enlarge or DOWN to shrink."
+        }
+    }
+}
+
+struct HandTelemetry: Equatable {
+    var status = "Show your free hand to the rear camera."
+    var center: CGPoint? = nil
+    var confidence: Float = 0
+    var pinchRatio: Double = 0
+    var fps: Double = 0
+    var processingMs: Double = 0
+    var visible: Bool { center != nil }
+}
+
+/// All coordinates are normalized Vision portrait image coordinates.
+/// This interpreter does not require ARKit, hardware, or multiple hands.
+struct HandLandmarks {
+    var center: CGPoint
+    var palmSize: CGFloat
+    var wristAngle: CGFloat
+    var pinchRatio: CGFloat
+    var fingersExtended: Int
+    var confidence: Float
+
+    enum Pose: Equatable { case pinch, open, neutral }
+    func pose(wasPinching: Bool) -> Pose {
+        if pinchRatio < (wasPinching ? 0.82 : 0.60) { return .pinch }
+        if fingersExtended >= 3 && pinchRatio > 0.85 { return .open }
+        return .neutral
+    }
+}
+
+struct OneHandGestureInterpreter {
     enum Change {
         case none
-        case translate(CGFloat,CGFloat)
-        case transform(scale:CGFloat, twist:CGFloat, turn:CGFloat)
+        case move(CGFloat,CGFloat)
+        case rotate(CGFloat,CGFloat,CGFloat)
+        case scale(CGFloat)
+        case smartMove(CGFloat,CGFloat,CGFloat,CGFloat)
+    }
+    private var pose: HandLandmarks.Pose = .neutral
+    private var proposed: HandLandmarks.Pose = .neutral
+    private var consecutive = 0
+    private var previous: HandLandmarks?
+    private var missing = 0
+
+    mutating func reset() {
+        pose = .neutral
+        proposed = .neutral
+        consecutive = 0
+        previous = nil
+        missing = 0
     }
 
-    private struct Pinch {
-        var center: CGPoint
-        var closed: Bool
+    mutating func process(_ sample: HandLandmarks?, mode: OneHandMode) -> (Change,String) {
+        guard let current = sample else {
+            missing += 1
+            previous = nil // never bridge a gap with a huge jump
+            if missing >= 2 { reset() }
+            return (.none,"No hand detected — open your hand in view of the rear camera.")
+        }
+        missing = 0
+        let kind = current.pose(wasPinching: pose == .pinch)
+        if kind != proposed { proposed = kind; consecutive = 1 }
+        else { consecutive += 1 }
+        if kind != pose {
+            guard consecutive >= 2 else {
+                previous = nil
+                return (.none,"Recognizing hand gesture…")
+            }
+            pose = kind
+            previous = nil
+        }
+        guard pose != .neutral else {
+            previous = nil
+            return (.none,"Hand detected. Make a pinch or show an open palm.")
+        }
+        guard let old = previous else {
+            previous = current
+            return (.none,pose == .pinch ? "PINCH ENGAGED" : "OPEN PALM ENGAGED")
+        }
+        // A responsive one-pole filter reduces jitter without buffering
+        // frames. The newest observation moves over halfway to the target.
+        let smoothing: CGFloat = 0.56
+        var smooth = current
+        smooth.center = CGPoint(
+            x: old.center.x + smoothing*(current.center.x-old.center.x),
+            y: old.center.y + smoothing*(current.center.y-old.center.y))
+        smooth.palmSize = old.palmSize + smoothing*(current.palmSize-old.palmSize)
+        smooth.wristAngle = old.wristAngle +
+            smoothing*Self.angle(current.wristAngle-old.wristAngle)
+        previous = smooth
+        func dead(_ x:CGFloat,_ threshold:CGFloat) -> CGFloat {
+            abs(x) < threshold ? 0 : x
+        }
+        let x = Self.clamp(dead(smooth.center.x-old.center.x,0.0017),-0.06,0.06)
+        let y = Self.clamp(dead(smooth.center.y-old.center.y,0.0017),-0.06,0.06)
+        let roll = Self.clamp(dead(Self.angle(smooth.wristAngle-old.wristAngle),0.012),-0.13,0.13)
+        if mode == .smart && pose == .open {
+            return (.rotate(x*3.2,y*3.2,0),"OPEN PALM · orbit")
+        }
+        guard pose == .pinch else {
+            return (.none,"Pinch thumb and index to control \(mode.rawValue).")
+        }
+        switch mode {
+        case .move: return (.move(x,y),"PINCH · move")
+        case .rotate: return (.rotate(x*3.5,y*3.5,roll),"PINCH · rotate")
+        case .scale:
+            let factor = Self.clamp(exp(-y*4.5),0.85,1.17)
+            return (.scale(factor),"PINCH · resize")
+        case .smart:
+            let factor = Self.clamp(smooth.palmSize/max(0.025,old.palmSize),0.90,1.10)
+            return (.smartMove(x,y,factor,roll),"PINCH · move/resize/wrist roll")
+        }
     }
 
-    private let workQueue = DispatchQueue(label:"neuroar.research.hand-vision",
-                                          qos:.userInitiated)
-    private let request = VNDetectHumanHandPoseRequest()
-    private var pending = false
-    private var lastRequestTime: TimeInterval = -.infinity
-    private var stableCount = 0
-    private var lastMode = 0
-    private var previousOne: CGPoint?
-    private var previousTwo: (center:CGPoint,distance:CGFloat,angle:CGFloat)?
-    private var previousSmoothed: [CGPoint] = []
-    private var lastVisibleAt: TimeInterval = 0
-
-    init() {
-        request.maximumHandCount = 2
+    private static func angle(_ raw:CGFloat) -> CGFloat {
+        var a = raw
+        while a > .pi { a -= 2 * .pi }
+        while a < -.pi { a += 2 * .pi }
+        return a
     }
+    private static func clamp(_ x:CGFloat,_ a:CGFloat,_ b:CGFloat)->CGFloat {
+        min(b,max(a,x))
+    }
+}
+
+/// One background Vision request at a time. No 2-hand requirement, no timer
+/// backlog and no image readback from the Metal renderer.
+final class VisionHandInput {
+    typealias Change = OneHandGestureInterpreter.Change
+    private let queue=DispatchQueue(label:"neuroar.hand-vision",qos:.userInitiated)
+    private let request=VNDetectHumanHandPoseRequest()
+    private var pending=false
+    private var generation:UInt64=0
+    private var previousStart:TimeInterval = -.infinity
+    private var previousComplete:TimeInterval = -.infinity
+    private var currentMode:OneHandMode = .smart
+    private var interpreter=OneHandGestureInterpreter()
+
+    init() { request.maximumHandCount=1 }
 
     func reset() {
-        previousOne = nil
-        previousTwo = nil
-        previousSmoothed.removeAll()
-        lastMode = 0
-        stableCount = 0
+        generation &+= 1
+        interpreter.reset()
+        previousComplete = -.infinity
     }
 
-    /// Called on the main ARSession delegate queue. Data processing never
-    /// blocks it. At most one outstanding Vision request and ~8 per second.
-    func process(frame: ARFrame,
-                 isEnabled: Bool,
-                 deliver: @escaping (Change, String) -> Void) {
-        guard isEnabled else {
-            reset()
-            return
-        }
-        guard !pending, frame.timestamp - lastRequestTime >= 0.12 else { return }
-        pending = true
-        lastRequestTime = frame.timestamp
-        let captured = frame.capturedImage
-        let stamp = frame.timestamp
-        workQueue.async { [weak self] in
+    func process(frame:ARFrame,isEnabled:Bool,mode:OneHandMode,
+                 deliver:@escaping (Change,HandTelemetry)->Void) {
+        guard isEnabled else { return }
+        if mode != currentMode { currentMode=mode; reset() }
+        let thermal=ProcessInfo.processInfo.thermalState
+        let interval:Double = (thermal == .serious || thermal == .critical) ? 0.15 : 0.075
+        guard !pending, frame.timestamp-previousStart >= interval else { return }
+        pending=true
+        previousStart=frame.timestamp
+        let pixelBuffer=frame.capturedImage
+        let stamp=frame.timestamp
+        let token=generation
+        let start=CACurrentMediaTime()
+        queue.async { [weak self] in
             guard let self else { return }
-            var observations: [Pinch] = []
+            var observation:HandLandmarks?
             do {
-                let handler = VNImageRequestHandler(cvPixelBuffer:captured,
-                                                     orientation:.right,
-                                                     options:[:])
+                let handler=VNImageRequestHandler(cvPixelBuffer:pixelBuffer,
+                                                   orientation:.right,options:[:])
                 try handler.perform([self.request])
-                for hand in self.request.results ?? [] {
-                    guard let thumb = try? hand.recognizedPoint(.thumbTip),
-                          let index = try? hand.recognizedPoint(.indexTip),
-                          let wrist = try? hand.recognizedPoint(.wrist),
-                          let mcp = try? hand.recognizedPoint(.indexMCP),
-                          [thumb,index,wrist,mcp].allSatisfy({ $0.confidence >= 0.52 }) else {
-                        continue
-                    }
-                    let gap = hypot(thumb.location.x-index.location.x,
-                                    thumb.location.y-index.location.y)
-                    let handSize = max(0.06,
-                        hypot(mcp.location.x-wrist.location.x,
-                              mcp.location.y-wrist.location.y))
-                    let closed = gap < min(0.11,max(0.030,handSize*0.43))
-                    observations.append(Pinch(center: CGPoint(
-                        x:(thumb.location.x+index.location.x)*0.5,
-                        y:(thumb.location.y+index.location.y)*0.5),
-                        closed:closed))
-                }
-            } catch {
-                // Temporary poor lighting/occlusion must not cause drift.
-            }
+                observation=self.request.results?.compactMap(Self.extract).first
+            } catch { observation=nil }
+            let elapsed=(CACurrentMediaTime()-start)*1000
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.pending = false
-                let (action,label) = self.update(
-                    observations: observations, timestamp: stamp)
-                deliver(action,label)
+                self.pending=false
+                guard self.generation == token,self.currentMode == mode else { return }
+                let fps=self.previousComplete.isFinite && stamp>self.previousComplete
+                    ? 1/(stamp-self.previousComplete) : 0
+                self.previousComplete=stamp
+                let (change,label)=self.interpreter.process(observation,mode:mode)
+                var info=HandTelemetry()
+                info.status=label
+                info.center=observation?.center
+                info.confidence=observation?.confidence ?? 0
+                info.pinchRatio=Double(observation?.pinchRatio ?? 0)
+                info.fps=min(60,fps)
+                info.processingMs=elapsed
+                deliver(change,info)
             }
         }
     }
 
-    private func update(observations:[Pinch], timestamp:TimeInterval) -> (Change,String) {
-        let pinches = observations.filter(\.closed).sorted { $0.center.x < $1.center.x }
-        let count = min(pinches.count,2)
-        guard count > 0 else {
-            reset()
-            return (.none,"Hand tracking: no confident pinch. Touch controls remain available.")
+    private static func extract(_ hand:VNHumanHandPoseObservation)->HandLandmarks? {
+        func joint(_ name:VNHumanHandPoseObservation.JointName,
+                   minConfidence:Float=0.34)->VNRecognizedPoint? {
+            guard let p=try? hand.recognizedPoint(name),
+                  p.confidence >= minConfidence else { return nil }
+            return p
         }
-        lastVisibleAt = timestamp
-        if count != lastMode {
-            reset()
-            lastMode = count
+        guard let thumb=joint(.thumbTip),let index=joint(.indexTip),
+              let wrist=joint(.wrist),let indexBase=joint(.indexMCP),
+              let pinkyBase=joint(.littleMCP) else { return nil }
+        let middleBase=joint(.middleMCP)
+        let width=hypot(indexBase.location.x-pinkyBase.location.x,
+                        indexBase.location.y-pinkyBase.location.y)
+        let end=middleBase?.location ?? indexBase.location
+        let length=hypot(end.x-wrist.location.x,end.y-wrist.location.y)
+        let palm=max(0.025,max(width,length))
+        let gap=hypot(thumb.location.x-index.location.x,
+                      thumb.location.y-index.location.y)
+        let center=CGPoint(x:(index.location.x+thumb.location.x)*0.5,
+                           y:(index.location.y+thumb.location.y)*0.5)
+        let pairs:[(VNHumanHandPoseObservation.JointName,
+                    VNHumanHandPoseObservation.JointName)] = [
+            (.indexTip,.indexMCP),(.middleTip,.middleMCP),
+            (.ringTip,.ringMCP),(.littleTip,.littleMCP)]
+        var extended=0
+        for (tipName,baseName) in pairs {
+            guard let tip=joint(tipName,minConfidence:0.26),
+                  let base=joint(baseName,minConfidence:0.26) else { continue }
+            let tipD=hypot(tip.location.x-wrist.location.x,
+                           tip.location.y-wrist.location.y)
+            let baseD=hypot(base.location.x-wrist.location.x,
+                            base.location.y-wrist.location.y)
+            if tipD > baseD + palm*0.21 { extended += 1 }
         }
-        stableCount += 1
-        let alpha: CGFloat = 0.43
-        let points = (0..<count).map { index -> CGPoint in
-            let raw = pinches[index].center
-            guard index < previousSmoothed.count else { return raw }
-            let before = previousSmoothed[index]
-            return CGPoint(x:before.x+(raw.x-before.x)*alpha,
-                           y:before.y+(raw.y-before.y)*alpha)
-        }
-        previousSmoothed = points
-        // Two detections required to avoid transient/false gestures.
-        guard stableCount >= 2 else {
-            if count == 1 { previousOne = points[0] }
-            return (.none,"Pinch acquired. Hold the gesture steady to manipulate.")
-        }
-        if count == 1 {
-            previousTwo = nil
-            let point = points[0]
-            defer { previousOne = point }
-            guard let before = previousOne else {
-                return (.none,"One pinch: move the volume.")
-            }
-            let x = point.x - before.x
-            let y = point.y - before.y
-            if hypot(x,y) < 0.0025 { return (.none,"One pinch: moving volume.") }
-            return (.translate(max(-0.035,min(0.035,x)),
-                               max(-0.035,min(0.035,y))),
-                    "One pinch: translating volume relative to its anchor.")
-        }
-        previousOne = nil
-        let a = points[0], b = points[1]
-        let dist = hypot(b.x-a.x,b.y-a.y)
-        guard dist >= 0.10 else {
-            previousTwo = nil
-            return (.none,"Spread both hands further apart for reliable control.")
-        }
-        let mid = CGPoint(x:(a.x+b.x)*0.5,y:(a.y+b.y)*0.5)
-        let angle = atan2(b.y-a.y,b.x-a.x)
-        defer { previousTwo = (mid,dist,angle) }
-        guard let old = previousTwo else {
-            return (.none,"Two pinches: scale and rotate.")
-        }
-        let factor = max(0.90,min(1.10,dist/max(0.01,old.distance)))
-        var deltaAngle = angle-old.angle
-        while deltaAngle > .pi { deltaAngle -= 2 * .pi }
-        while deltaAngle < -.pi { deltaAngle += 2 * .pi }
-        let turn = max(-0.08,min(0.08,(mid.x-old.center.x)*1.2))
-        return (.transform(scale:factor,twist:max(-0.12,min(0.12,deltaAngle)),
-                           turn:turn),
-                "Two pinches: scaling and rotating volume.")
+        return HandLandmarks(center:center,palmSize:palm,
+                             wristAngle:atan2(end.y-wrist.location.y,
+                                              end.x-wrist.location.x),
+                             pinchRatio:gap/palm,fingersExtended:extended,
+                             confidence:min(thumb.confidence,index.confidence,
+                                            wrist.confidence,indexBase.confidence,
+                                            pinkyBase.confidence))
     }
 }
