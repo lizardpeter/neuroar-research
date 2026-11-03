@@ -30,8 +30,12 @@ if not isinstance(ipad, list) or not needed.issubset(ipad):
     errors.append("iPad orientation configuration must include all four orientations")
 if not info.get("NSCameraUsageDescription"):
     errors.append("camera usage description is absent")
+# Apple's TestFlight export-compliance declaration must be a Boolean false,
+# not an absent key or the string "NO". Keep this check in Release archives.
+if info.get("ITSAppUsesNonExemptEncryption") is not False:
+    errors.append("ITSAppUsesNonExemptEncryption must be Boolean NO for this exempt-encryption build")
 if errors:
     for issue in errors:
         print("::error::" + issue, file=sys.stderr)
     sys.exit(1)
-print("Verified compiled iOS metadata: bundle ID, AppIcon, launch screen, iPhone/iPad orientations and camera permission.")
+print("Verified compiled iOS metadata: bundle ID, AppIcon, launch screen, iPhone/iPad orientations, camera permission and export-compliance declaration.")
