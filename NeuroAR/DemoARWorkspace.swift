@@ -2,6 +2,7 @@ import SwiftUI
 import ARKit
 import SceneKit
 import MetalKit
+import QuartzCore
 import GeometryCore
 import simd
 
@@ -88,6 +89,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
         private var lastResetTransformRequest = 0
         private var lastTrackingStatus = ""
         private var lastHandStatus = ""
+        private var lastTelemetryUI = 0.0
         private var lastLidarStatus = ""
         private var wasTrackingNormal = false
 
@@ -256,6 +258,43 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
         }
 
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
+            // Detection and live confidence diagnostics work BEFORE
+            // placement, and even when ARKit is still relocalizing.
+            // Run detection whenever Demo AR is visible, including BEFORE
+            // placement. The HUD can therefore diagnose camera/lighting
+            // problems independently of AR anchors and volume rendering.
+            guard parent.handEnabled else { return }
+            handInput.process(frame:frame,isEnabled:true,mode:parent.handMode) {
+                [weak self] change,telemetry in
+                guard let self,self.parent.active,self.parent.handEnabled else { return }
+                let now=CACurrentMediaTime()
+                if now-self.lastTelemetryUI >= 0.18 ||
+                    self.parent.handTelemetry.visible != telemetry.visible {
+                    self.lastTelemetryUI = now
+                    self.parent.handTelemetry = telemetry
+                    self.reportHand(telemetry.status)
+                }
+                // We still detect the hand when unplaced / tracking limited,
+                // but never apply a gesture unless a stable world anchor exists.
+                guard self.activeAnchor != nil,
+                      let frame=self.arView?.session.currentFrame,
+                      case .normal = frame.camera.trackingState else { return }
+                switch change {
+                case .none: break
+                case let .move(x,y):
+                    self.renderer?.moveInView(dx:Float(x*0.55),
+                                              dy:Float(y*0.55))
+                case let .rotate(x,y,roll):
+                    self.renderer?.rotate(dx:Float(x),dy:Float(y),
+                                          roll:Float(roll))
+                case let .scale(factor):
+                    self.renderer?.scale(by:Float(factor))
+                case let .smartMove(x,y,factor,roll):
+                    self.renderer?.moveInView(dx:Float(x*0.40),dy:Float(y*0.40))
+                    self.renderer?.scale(by:Float(factor))
+                    self.renderer?.rotate(dx:0,dy:0,roll:Float(roll))
+                }
+            }
             guard parent.active else { return }
             if lidarAvailable {
                 let meshCount = frame.anchors.reduce(into:0) { count, anchor in
@@ -285,32 +324,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
                     report("AR anchor tracked. Volume stays fixed in room coordinates.")
                 }
             }
-            // Run detection whenever Demo AR is visible, including BEFORE
-            // placement. The HUD can therefore diagnose camera/lighting
-            // problems independently of AR anchors and volume rendering.
-            guard parent.handEnabled else { return }
-            handInput.process(frame:frame,isEnabled:true,mode:parent.handMode) {
-                [weak self] change,telemetry in
-                guard let self,self.parent.active,self.parent.handEnabled else { return }
-                self.parent.handTelemetry = telemetry
-                self.reportHand(telemetry.status)
-                guard self.activeAnchor != nil else { return }
-                switch change {
-                case .none: break
-                case let .move(x,y):
-                    self.renderer?.moveInView(dx:Float(x*0.55),
-                                              dy:Float(y*0.55))
-                case let .rotate(x,y,roll):
-                    self.renderer?.rotate(dx:Float(x),dy:Float(y),
-                                          roll:Float(roll))
-                case let .scale(factor):
-                    self.renderer?.scale(by:Float(factor))
-                case let .smartMove(x,y,factor,roll):
-                    self.renderer?.moveInView(dx:Float(x*0.40),dy:Float(y*0.40))
-                    self.renderer?.scale(by:Float(factor))
-                    self.renderer?.rotate(dx:0,dy:0,roll:Float(roll))
-                }
-            }
+
         }
 
         func installTouch(on view:ARSCNView) {
