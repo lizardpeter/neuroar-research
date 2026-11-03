@@ -397,6 +397,7 @@ struct DemoARWorkspace: View {
     @State private var handEnabled = true
     @State private var handMode: OneHandMode = .smart
     @State private var handTelemetry = HandTelemetry()
+    @State private var showHandCursor = true
     @State private var placed = false
     @State private var placeRequest = 0
     @State private var resetRequest = 0
@@ -423,6 +424,19 @@ struct DemoARWorkspace: View {
                 depthOcclusion:depthOcclusion,renderSamples:renderSamples,
                 displayMode:displayMode,threshold:threshold,opacity:opacity)
                 .ignoresSafeArea(edges:.horizontal)
+            if handEnabled && showHandCursor, let hand=handTelemetry.center {
+                GeometryReader { proxy in
+                    Circle().strokeBorder(Color.green.opacity(0.95),lineWidth:2)
+                        .background(Circle().fill(Color.green.opacity(0.14)))
+                        .frame(width:30,height:30)
+                        .position(x:max(16,min(proxy.size.width-16,
+                                             hand.x*proxy.size.width)),
+                                  y:max(16,min(proxy.size.height-16,
+                                             (1-hand.y)*proxy.size.height)))
+                }
+                .allowsHitTesting(false)
+                .accessibilityLabel("Approximate detected hand position")
+            }
             if !placed {
                 Image(systemName:"plus.viewfinder")
                     .font(.system(size:46,weight:.ultraLight))
@@ -528,6 +542,9 @@ struct DemoARWorkspace: View {
                     }
                     Section("One-hand gestures") {
                         Toggle("Enable one-hand tracking",isOn:$handEnabled)
+                        Toggle("Show approximate hand cursor",isOn:$showHandCursor)
+                        Text("The green ring reports the hand position estimated by Vision; its camera projection is approximate, not spatial 3D tracking.")
+                            .font(.caption2).foregroundStyle(.secondary)
                         Picker("Action",selection:$handMode) {
                             ForEach(OneHandMode.allCases) { mode in
                                 Text(mode.rawValue).tag(mode)
