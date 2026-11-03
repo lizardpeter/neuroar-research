@@ -1,4 +1,4 @@
-# NeuroAR v0.10 development status — November 3, 2026
+# NeuroAR v0.11 development status — November 3, 2026
 
 **Research-only. Not a medical device.** MRI-to-head overlays and manually
 sketched trajectories must not guide physical procedures.
@@ -26,12 +26,27 @@ sketched trajectories must not guide physical procedures.
 - Synthetic-only on-device sensor diagnostic UI, without exporting raw images.
 - Documented phantom testing protocol and fail-closed tracking behavior.
 
+## v0.11 iOS design and safety improvements
+
+- System-native SwiftUI Study / Live AR / Validation tabs and navigation bars;
+  floating Liquid Glass controls on iOS 26, native material fallback on iOS 18–25.
+- A camera-first interface with an always-visible research-only caution, live
+  tracking summary and an adjustable manual trajectory-depth preview.
+- An accessible AR controls sheet for study imports, optional manual fallback,
+  scalp-fit experiments and phantom-only LiDAR statistics.
+- A larger axial MRI image, named facial-point presets with replace-in-place
+  editing, adaptive grouped cards and cached orthogonal slice rasters.
+- Explicit camera suspension and pose invalidation when changing tabs or
+  backgrounding the app; resume always requires renewed registration.
+- Frame-timestamp freshness gate in `GeometryCore`, so stale tracking cannot
+  keep the MRI geometry visible. Four new synthetic unit tests cover it.
+
 ## Validation so far
 
-- `swift test --package-path GeometryCore` — **45 tests passed** on Linux, including natural-feature tests.
+- `swift test --package-path GeometryCore` — **49 tests passed** on Linux, including natural-feature tests.
 - Swift iOS files pass syntax parsing; Xcode project parses as OpenStep plist.
-- **New Xcode iOS simulator CI, Rust linking, and physical ARKit behavior
-  require GitHub macOS and actual hardware testing. Do not assume they pass.**
+- **The v0.11 Xcode iOS Simulator build and native Liquid Glass APIs must be
+  validated by GitHub macOS CI. Actual camera/LiDAR behavior requires hardware.**
 - No real iPhone LiDAR recording, quantified sensor accuracy, or patient/head
   movement test has been completed in this environment.
 

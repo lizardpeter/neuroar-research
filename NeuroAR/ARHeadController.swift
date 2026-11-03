@@ -87,6 +87,19 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
         view.session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
+    /// TabView can retain offscreen tabs, so disappearing from the tab does
+    /// not necessarily dismantle the camera view. Stop capture explicitly.
+    func suspendCamera(reason: String = "AR view inactive; registration cleared.") {
+        arView?.session.pause()
+        clearRegistration(reason: reason)
+        trackingIsNormal = false
+    }
+
+    func resumeCameraIfMounted() {
+        guard let view = arView else { return } // makeUIView starts new tabs
+        connect(to: view) // always starts a fresh, unregistered session
+    }
+
     func disconnect(from view: ARView) {
         view.session.pause()
         if arView === view {
@@ -235,12 +248,20 @@ final class ARHeadController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func updateHeadFollower() {
         guard let root else { return }
-        if naturalHeadBound, (faceVisible || surfaceTrackingActive), trackingIsNormal,
-           let current = currentMRIToWorld {
+        let timestamp = arView?.session.currentFrame?.timestamp ?? .infinity
+        let source = OverlayTrackingGate.source(
+            cameraNormal: trackingIsNormal,
+            headBound: naturalHeadBound,
+            hasPose: currentMRIToWorld != nil,
+            faceVisible: faceVisible,
+            surfaceTracking: surfaceTrackingActive,
+            secondsSinceFace: lastFacialFrameTime.map { timestamp - $0 },
+            secondsSinceMotion: lastNaturalFrameTime.map { timestamp - $0 })
+        if source != .hidden, let current = currentMRIToWorld {
             root.transform = Transform(matrix: current)
             root.isEnabled = true
         } else {
-            // Never display a stale MRI over a moving, occluded, or untracked head.
+            // Stale callbacks must never leave an MRI overlay glued to space.
             root.isEnabled = false
         }
     }

@@ -26,6 +26,28 @@ final class MRIPlanningModel: ObservableObject {
     @Published var showIntensity3D = false
     @Published var showROI3D = true
     private var surfaceRequest = 0
+    private struct SliceCacheKey: Equatable {
+        let imageVersion: Int
+        let maskVersion: Int
+        let x: Double
+        let y: Double
+        let z: Double
+        let low: Float
+        let high: Float
+    }
+    private var sliceCache: [ImagingPlane: (key: SliceCacheKey, value: SliceRaster)] = [:]
+
+    func sliceRaster(for plane: ImagingPlane) -> SliceRaster {
+        let key = SliceCacheKey(imageVersion: volumeRevision, maskVersion: maskRevision,
+                                x: cursorMm.x, y: cursorMm.y, z: cursorMm.z,
+                                low: lowWindow, high: highWindow)
+        if let cached = sliceCache[plane], cached.key == key { return cached.value }
+        let raster = SliceRenderer.render(volume: volume, mask: mask, plane: plane,
+                                          cursor: cursorMm, window: window,
+                                          width: 176, height: 176)
+        sliceCache[plane] = (key: key, value: raster)
+        return raster
+    }
     @Published private(set) var cursorMm = Point3(0,0,0)
     @Published private(set) var entryMm = Point3(30,65,32)
     @Published private(set) var targetMm = Point3(5,0,4)
@@ -44,8 +66,16 @@ final class MRIPlanningModel: ObservableObject {
         guard volume.nearest(at:cursorMm) != nil else { status="Select a point within the image first."; return }
         let label = String(name.trimmingCharacters(in:.whitespacesAndNewlines).prefix(100))
         guard !label.isEmpty else { status="Enter a landmark label first."; return }
-        landmarks.append(StudyLandmark(id:UUID().uuidString,name:label,pointMm:cursorMm))
-        status="Landmark saved at MRI crosshair. Verify its physical counterpart before AR registration."
+        // Re-annotating a named feature replaces its previous position instead
+        // of creating ambiguous same-name correspondences for registration.
+        if let index = landmarks.firstIndex(where: { $0.name.caseInsensitiveCompare(label) == .orderedSame }) {
+            let prior = landmarks[index]
+            landmarks[index] = StudyLandmark(id: prior.id, name: label, pointMm: cursorMm)
+            status = "Landmark updated at crosshair. Confirm the MRI feature location."
+        } else {
+            landmarks.append(StudyLandmark(id: UUID().uuidString, name: label, pointMm: cursorMm))
+            status = "Landmark saved at MRI crosshair. Verify its physical counterpart before AR registration."
+        }
     }
 
     func removeLandmark(id:String) {
@@ -299,8 +329,12 @@ struct MRIPlanningView: View {
             VStack(alignment:.leading,spacing:16) {
                 header
                 importButtons
-                Text(model.status).font(.caption).foregroundStyle(.cyan)
-                    .frame(maxWidth:.infinity,alignment:.leading)
+                Label(model.status, systemImage: model.loading ? "arrow.triangle.2.circlepath" : "info.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(NeuroStyle.card, in: RoundedRectangle(cornerRadius: 16))
 
                 HStack(alignment:.top,spacing:12) {
                     metric("IMAGE GRID",model.volume.dimensions.map(String.init).joined(separator:" × "))
@@ -315,9 +349,14 @@ struct MRIPlanningView: View {
                 .pickerStyle(.segmented)
                 .tint(accent)
 
-                LazyVGrid(columns:[GridItem(.flexible(),spacing:10),GridItem(.flexible(),spacing:10)],spacing:12) {
-                    ForEach(ImagingPlane.allCases,id:\.self) { plane in
-                        SliceTile(model:model,plane:plane)
+                // Prioritize the axial image for touch precision, then place
+                // the other two orthogonal planes side-by-side on iPhone.
+                VStack(spacing: 12) {
+                    SliceTile(model: model, plane: .axial)
+                        .frame(maxWidth: 480)
+                    HStack(alignment: .top, spacing: 12) {
+                        SliceTile(model: model, plane: .coronal)
+                        SliceTile(model: model, plane: .sagittal)
                     }
                 }
                 Text("Tap a slice to place the selected crosshair, entry, or target. All planes share the same physical millimeter coordinates. Image orientation is research-only and must be verified against source landmarks.")
@@ -379,7 +418,7 @@ struct MRIPlanningView: View {
                         Text("A zero-overlap result does not mean a route is safe, collision-free, or anatomically appropriate.")
                             .font(.caption2).foregroundStyle(.orange)
                     }
-                    .padding(12).background(Color.white.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
+                    .padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
                 }
                 DisclosureGroup("Image contrast and coordinates",isExpanded:$showAdvanced) {
                     VStack(spacing:10) {
@@ -409,13 +448,15 @@ struct MRIPlanningView: View {
                     }.font(.caption).padding(.top,8)
                 }.tint(accent)
 
-                Text("RESEARCH / EDUCATION ONLY. Not for patient care, EVD placement, operative planning, or instrument navigation. Registration uncertainty, patient motion, vessels, and image distortion are not validated.")
+                Label("RESEARCH / EDUCATION ONLY. Not for patient care, EVD placement, operative planning, or instrument navigation. Registration uncertainty, patient motion, vessels, and image distortion are not validated.", systemImage: "exclamationmark.shield")
                     .font(.caption2.bold()).foregroundStyle(.orange)
                     .padding(12).frame(maxWidth:.infinity,alignment:.leading)
-                    .background(Color.orange.opacity(0.09),in:RoundedRectangle(cornerRadius:12))
+                    .background(Color.orange.opacity(0.09),in:RoundedRectangle(cornerRadius:18))
             }
-            .padding(15)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 18)
         }
+        .background(NeuroStyle.canvas)
         .onAppear {
             if model.tissueSurface == nil && !model.surfaceBusy { model.rebuildPreview() }
         }
@@ -473,22 +514,49 @@ struct MRIPlanningView: View {
         }
     }
 
-    private var header:some View {
-        VStack(alignment:.leading,spacing:5) {
-            Text("MRI · MULTIPLANAR WORKSPACE").font(.system(.headline,design:.rounded)).tracking(1)
-            Text("Linked anatomical views + manual research trajectories")
-                .font(.caption).foregroundStyle(.secondary)
+    private var header: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 29, weight: .medium))
+                .foregroundStyle(.teal)
+                .frame(width: 54, height: 54)
+                .background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 17))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Anatomical study")
+                    .font(.title2.weight(.semibold))
+                Text("3D MRI · synchronized planes · research paths")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(NeuroStyle.card, in: RoundedRectangle(cornerRadius: 22))
     }
 
-    private var importButtons:some View {
-        HStack(spacing:8) {
-            Button("MRI .nii") { importingVolume=true }
-            Button("DICOM .dcm") { importingDICOM=true }
-            Button("ROI mask") { importingMask=true }
-            Button("Demo") { model.resetDemo() }
+    private var importButtons: some View {
+        HStack(spacing: 10) {
+            Menu {
+                Button { importingVolume = true } label: {
+                    Label("MRI · NIfTI (.nii / .nii.gz)", systemImage: "square.stack")
+                }
+                Button { importingDICOM = true } label: {
+                    Label("DICOM image series", systemImage: "square.on.square")
+                }
+                Button { importingMask = true } label: {
+                    Label("Segmentation ROI mask", systemImage: "square.3.layers.3d")
+                }
+            } label: {
+                Label("Import imaging", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            Button { model.resetDemo() } label: {
+                Label("Demo", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(CompactButtonStyle())
         .disabled(model.loading)
     }
 
@@ -526,7 +594,7 @@ struct MRIPlanningView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .padding(12).background(Color.white.opacity(0.06),in:RoundedRectangle(cornerRadius:12))
+        .padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private var candidateCard:some View {
@@ -558,7 +626,7 @@ struct MRIPlanningView: View {
                     .font(.caption)
             }
         }
-        .padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+        .padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private var intensityProfileCard: some View {
@@ -579,7 +647,7 @@ struct MRIPlanningView: View {
             }.font(.system(size:9))
             Text("Sampled signal values and mask overlaps only. Tissue identity, vessel-free clearance, and clinical path safety CANNOT be inferred from this graph.")
                 .font(.caption2).foregroundStyle(.secondary)
-        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+        }.padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private var researchLandmarksCard: some View {
@@ -587,10 +655,23 @@ struct MRIPlanningView: View {
             Text("MRI-TO-HEAD RESEARCH LANDMARKS").font(.caption.bold()).tracking(0.8)
             Text("For marker-free tracking, annotate the actual MRI facial anatomy with exact labels: LeftEyeCenter, RightEyeCenter, NoseTip, MouthCenter. All four are recommended; at least three non-collinear visible features must match the camera. Vision detects their physical counterparts automatically; no attached markers or manual camera taps are needed. Appearance and MRI field-of-view matter, and matching is unvalidated.")
                 .font(.caption2).foregroundStyle(.secondary)
+            Menu {
+                ForEach(["LeftEyeCenter", "RightEyeCenter", "NoseTip", "MouthCenter"], id: \.self) { feature in
+                    Button { model.addLandmark(name: feature) } label: {
+                        Label(feature, systemImage: "mappin.and.ellipse")
+                    }
+                }
+            } label: {
+                Label("Tag natural facial feature at crosshair", systemImage: "faceid")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            Text("Choose a named feature to tag its MRI location. Repeating a feature replaces its earlier position. Automatic MRI facial extraction has not yet been validated or implemented.")
+                .font(.footnote).foregroundStyle(.secondary)
             HStack {
-                TextField("Landmark name (e.g., point A)",text:$landmarkName)
+                TextField("Other feature label",text:$landmarkName)
                     .textFieldStyle(.roundedBorder)
-                Button("Add at crosshair") {
+                Button("Save") {
                     model.addLandmark(name:landmarkName.isEmpty ? "Landmark \(model.landmarks.count+1)" : landmarkName)
                     landmarkName=""
                 }.buttonStyle(.bordered)
@@ -612,7 +693,7 @@ struct MRIPlanningView: View {
                 .disabled(model.researchARStudy() == nil || model.loading)
             Text("Transfers MRI coordinates and preview surfaces. The AR camera searches automatically for matching natural facial features and LiDAR depths. No prior registration is reused.")
                 .font(.caption2).foregroundStyle(.orange)
-        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+        }.padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private var planPersistenceCard: some View {
@@ -630,7 +711,7 @@ struct MRIPlanningView: View {
             }
             Text("The plan contains coordinates, labels, and a voxel fingerprint, but not MRI pixels. It requires identical voxel data and orientation to reopen and never restores AR registration. It is not guaranteed anonymous; do not put patient-identifying labels in it.")
                 .font(.caption2).foregroundStyle(.secondary)
-        }.padding(12).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:12))
+        }.padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private var depthCard:some View {
@@ -651,8 +732,8 @@ struct MRIPlanningView: View {
 
     private func metric(_ name:String,_ value:String)->some View {
         VStack(alignment:.leading,spacing:4) {
-            Text(name).font(.system(size:9,weight:.bold,design:.monospaced)).foregroundStyle(.gray)
-            Text(value).font(.system(size:11,weight:.semibold,design:.monospaced)).lineLimit(2)
+            Text(name).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            Text(value).font(.caption.weight(.semibold).monospacedDigit()).lineLimit(2)
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
 
@@ -666,8 +747,7 @@ private struct SliceTile: View {
     let plane:ImagingPlane
 
     var body:some View {
-        let raster=SliceRenderer.render(volume:model.volume,mask:model.mask,plane:plane,
-                                        cursor:model.cursorMm,window:model.window,width:176,height:176)
+        let raster=model.sliceRaster(for:plane)
         let frame=raster.frame
         VStack(spacing:6) {
             HStack {
@@ -708,7 +788,7 @@ private struct SliceTile: View {
             Text("Projected markers · not depth-verified")
                 .font(.system(size:8,design:.monospaced)).foregroundStyle(.gray)
         }
-        .padding(9).background(Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:11))
+        .padding(12).background(NeuroStyle.card,in:RoundedRectangle(cornerRadius:18))
     }
 
     private func projectedPath(frame:SliceFrame,size:CGSize)->some View {

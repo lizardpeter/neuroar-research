@@ -8,7 +8,7 @@ This open-source native iOS prototype combines **SwiftUI / ARKit / RealityKit**
 with a **natively linked Rust static library**, and a cross-platform Swift
 `GeometryCore`. Source: https://github.com/lizardpeter/neuroar-research
 
-## Current capabilities (v0.9 natural-head research prototype)
+## Current capabilities (v0.11 native UI and tracking prototype)
 
 - **MRI import:** NIfTI-1 `.nii` and gzip-compressed `.nii.gz`, with bounded
   decompression, GZIP checksum validation, original affine, spacing and intensity
@@ -42,6 +42,28 @@ with a **natively linked Rust static library**, and a cross-platform Swift
 - **Rust linked into iOS:** `RustCore` exports the path distance C ABI, called
   by the Swift UI. Its static library is built from source during Xcode builds
   for the requested Apple architecture. Other compute kernels remain in Swift.
+
+## Native iOS design refresh (v0.11)
+
+- **iOS 26 Liquid Glass:** The app uses native SwiftUI `TabView`, navigation
+  stacks, toolbars, menus, sheets, system controls, and a small number of
+  Liquid Glass floating controls above the live camera. The same code uses
+  native material fallback on iOS 18–25. Glass is intentionally **not** drawn
+  over anatomical image pixels or repeated on every content card.
+- **MRI workspace:** Prominent axial slice with coronal/sagittal companions,
+  named natural-facial-feature tagging, semantic grouped surfaces, improved
+  touch targets, and a three-plane raster cache keyed by imaging state.
+- **Live AR:** Camera-forward view with tracking-quality/status HUD, a compact
+  research-depth slider, and an adaptive controls sheet. An independent
+  Validation tab makes missing quality evidence explicit.
+- **Camera lifecycle:** Inactive tab and background transitions pause the AR
+  session and invalidate its old registration; returning creates a new one.
+- **Freshness gate:** MRI overlays are hidden on stale Vision or LiDAR frames,
+  nonfinite timestamps, missing pose, or interrupted camera tracking. These
+  checks are demonstration software guards, **not clinical accuracy limits**.
+
+See [`docs/IOS_DESIGN.md`](docs/IOS_DESIGN.md) for structure, accessibility,
+responsive design, iOS 26 adoption, and remaining physical-device QA.
 
 ## Run and build
 
