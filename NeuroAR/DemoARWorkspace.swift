@@ -13,6 +13,9 @@ struct DemoARCanvas: UIViewRepresentable {
     @Binding var handControlEnabled: Bool
     @Binding var gestureStatus: String
     var active: Bool
+    var showScalp: Bool
+    var showSkull: Bool
+    var resetToken: Int
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -43,6 +46,7 @@ struct DemoARCanvas: UIViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.refreshSceneIfNeeded()
         context.coordinator.updateSessionIfNeeded()
+        context.coordinator.resetIfNeeded()
     }
 
     final class Coordinator: NSObject, ARSessionDelegate, UIGestureRecognizerDelegate {
@@ -59,6 +63,7 @@ struct DemoARCanvas: UIViewRepresentable {
         private var oneHand: CGPoint?
         private var twoHands: (center: CGPoint, length: CGFloat, angle: CGFloat)?
         private var statusText = ""
+        private var lastResetToken = 0
 
         init(_ parent: DemoARCanvas) {
             self.parent = parent
@@ -90,6 +95,12 @@ struct DemoARCanvas: UIViewRepresentable {
                 resetHandBaseline()
                 placed = false
             }
+        }
+
+        func resetIfNeeded() {
+            guard lastResetToken != parent.resetToken else { return }
+            lastResetToken = parent.resetToken
+            resetPose()
         }
 
         func resetHandBaseline() {
@@ -264,6 +275,7 @@ struct DemoARCanvas: UIViewRepresentable {
                 "\(imaging.cursorMm.x)/\(imaging.cursorMm.y)/\(imaging.cursorMm.z)/" +
                 "\(imaging.window.lowerBound)/\(imaging.window.upperBound)/" +
                 "\(imaging.showSlices3D)/\(imaging.showIntensity3D)/\(imaging.showROI3D)/" +
+                "\(parent.showScalp)/\(parent.showSkull)/" +
                 "\(imaging.tissueSurface?.triangleCount ?? 0)/\(imaging.maskSurface?.triangleCount ?? 0)"
             guard lastSliceKey != key || lastRevision != imaging.volumeRevision else { return }
             lastSliceKey = key
@@ -283,14 +295,14 @@ struct DemoARCanvas: UIViewRepresentable {
             let scalpNode = SCNNode(geometry: scalp)
             scalpNode.scale = SCNVector3(0.83,1.22,1.0)
             scalpNode.name = "Schematic scalp, not reconstructed anatomy"
-            model.addChildNode(scalpNode)
+            if parent.showScalp { model.addChildNode(scalpNode) }
             let skull = SCNSphere(radius: 0.092)
             skull.segmentCount = 40
             skull.firstMaterial = material(.white, opacity: 0.10)
             let skullNode = SCNNode(geometry: skull)
             skullNode.scale = SCNVector3(0.83,1.20,0.97)
             skullNode.name = "Schematic skull, not a CT segmentation"
-            model.addChildNode(skullNode)
+            if parent.showSkull { model.addChildNode(skullNode) }
 
             if image.showSlices3D {
                 for plane in ImagingPlane.allCases {
@@ -378,13 +390,17 @@ struct DemoARWorkspace: View {
     @ObservedObject var imaging: MRIPlanningModel
     let active: Bool
     @State private var enabled = true
+    @State private var showScalp = true
+    @State private var showSkull = true
+    @State private var resetToken = 0
     @State private var gestureStatus = "Move the device to establish tracking."
     @State private var showingInstructions = false
 
     var body: some View {
         ZStack(alignment: .top) {
             DemoARCanvas(imaging: imaging, handControlEnabled: $enabled,
-                         gestureStatus: $gestureStatus, active: active)
+                         gestureStatus: $gestureStatus, active: active,
+                         showScalp: showScalp, showSkull: showSkull, resetToken: resetToken)
                 .ignoresSafeArea(edges: .horizontal)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -396,8 +412,18 @@ struct DemoARWorkspace: View {
                     }
                 }
                 Text(gestureStatus).font(.footnote)
-                Toggle("Camera hand gestures", isOn: $enabled)
-                    .font(.subheadline)
+                HStack(spacing: 12) {
+                    Toggle("Hand controls", isOn: $enabled)
+                    Button("Recenter") { resetToken += 1 }
+                        .buttonStyle(.bordered)
+                }
+                .font(.subheadline)
+                HStack {
+                    Toggle("Scalp shell", isOn: $showScalp)
+                    Toggle("Skull shell", isOn: $showSkull)
+                    Toggle("Scans", isOn: $imaging.showSlices3D)
+                }
+                .font(.caption2)
                 Text("Touch: one-finger rotate · two-finger drag · pinch to scale · twist to roll.")
                     .font(.caption2)
                 Text("Virtual anatomy and intensity slices are NOT aligned to a patient, physical head, or clinical trajectory.")
