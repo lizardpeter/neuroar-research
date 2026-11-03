@@ -18,6 +18,9 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
     let handEnabled: Bool
     let placementRequest: Int
     let resetRequest: Int
+    let resetTransformRequest: Int
+    let depthOcclusion: Bool
+    let renderSamples: UInt32
     let displayMode: VolumeDisplayMode
     let threshold: Double
     let opacity: Double
@@ -80,6 +83,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
         private var lidarAvailable = false
         private var lastPlaceRequest = 0
         private var lastResetRequest = 0
+        private var lastResetTransformRequest = 0
         private var lastTrackingStatus = ""
         private var lastHandStatus = ""
         private var lastLidarStatus = ""
@@ -97,7 +101,9 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
             renderer?.displayMode = parent.displayMode
             renderer?.threshold = Float(parent.threshold)
             renderer?.opacity = Float(parent.opacity)
-            renderer?.useSceneDepth = lidarAvailable
+            renderer?.useSceneDepth = lidarAvailable && parent.depthOcclusion
+            renderer?.quality = parent.handEnabled
+                ? min(parent.renderSamples, 96) : parent.renderSamples
             renderer?.isActive = parent.active
             if parent.active && !running { startSession() }
             else if !parent.active && running {
@@ -116,6 +122,11 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
             if parent.placementRequest != lastPlaceRequest {
                 lastPlaceRequest = parent.placementRequest
                 place(at:CGPoint(x:arView.bounds.midX,y:arView.bounds.midY))
+            }
+            if parent.resetTransformRequest != lastResetTransformRequest {
+                lastResetTransformRequest = parent.resetTransformRequest
+                renderer?.resetInteraction()
+                report("Transform reset. The world anchor remains in place.")
             }
             if !parent.handEnabled { handInput.reset() }
         }
@@ -141,7 +152,7 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
             if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
                 config.frameSemantics.insert(.smoothedSceneDepth)
             }
-            renderer?.useSceneDepth = lidarAvailable
+            renderer?.useSceneDepth = lidarAvailable && parent.depthOcclusion
             let message = lidarAvailable
                 ? "LiDAR mesh raycasts + smoothed depth enabled"
                 : "Visual-inertial AR (no LiDAR scene mesh available)"
@@ -243,6 +254,18 @@ struct AnchoredVolumeARCanvas: UIViewRepresentable {
 
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
             guard parent.active else { return }
+            if lidarAvailable {
+                let meshCount = frame.anchors.reduce(into:0) { count, anchor in
+                    if anchor is ARMeshAnchor { count += 1 }
+                }
+                let depthLive = frame.smoothedSceneDepth != nil
+                let state = "LiDAR mesh: \(meshCount) chunks · depth " +
+                    (depthLive ? "live" : "acquiring")
+                if state != lastLidarStatus {
+                    lastLidarStatus = state
+                    parent.lidarStatus = state
+                }
+            }
             guard case .normal = frame.camera.trackingState else {
                 if wasTrackingNormal {
                     wasTrackingNormal = false
@@ -345,6 +368,9 @@ struct DemoARWorkspace: View {
     @State private var placed = false
     @State private var placeRequest = 0
     @State private var resetRequest = 0
+    @State private var resetTransformRequest = 0
+    @State private var depthOcclusion = true
+    @State private var renderSamples: UInt32 = 128
     @State private var tracking = "Scan a horizontal surface to start."
     @State private var handStatus = "Hand control off. Touch gestures are always available."
     @State private var lidar = "Checking ARKit capabilities…"
@@ -360,6 +386,8 @@ struct DemoARWorkspace: View {
                 lidarStatus:$lidar,isPlaced:$placed,
                 active:active,handEnabled:handEnabled,
                 placementRequest:placeRequest,resetRequest:resetRequest,
+                resetTransformRequest:resetTransformRequest,
+                depthOcclusion:depthOcclusion,renderSamples:renderSamples,
                 displayMode:displayMode,threshold:threshold,opacity:opacity)
                 .ignoresSafeArea(edges:.horizontal)
             if !placed {
@@ -394,9 +422,8 @@ struct DemoARWorkspace: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.teal)
-                        Button("Reset rotation") {
-                            // Reposition clears interaction and requests a fresh raycast.
-                            resetRequest += 1
+                        Button("Reset view") {
+                            resetTransformRequest += 1
                         }.buttonStyle(.bordered)
                     }
                     Picker("Rendering",selection:$displayMode) {
@@ -432,6 +459,13 @@ struct DemoARWorkspace: View {
                             Text("Density")
                             Slider(value:$opacity,in:0.20...3.0)
                         }
+                        Picker("Render quality",selection:$renderSamples) {
+                            Text("Smooth").tag(UInt32(80))
+                            Text("Balanced").tag(UInt32(128))
+                            Text("Detailed").tag(UInt32(192))
+                        }.pickerStyle(.segmented)
+                        Text("Hand tracking automatically reduces ray samples to reserve GPU time.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("Direct volume compositing samples the actual image intensities. MIP projects maximum intensity. Surface mode displays an intensity threshold, not segmented anatomy.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -443,6 +477,7 @@ struct DemoARWorkspace: View {
                     }
                     Section("Tracking and placement") {
                         Text(lidar)
+                        Toggle("Real-world depth occlusion",isOn:$depthOcclusion)
                         Text("LiDAR scene reconstruction and smoothed depth are enabled only on supported devices. The volume is placed using an explicit ARKit horizontal-surface raycast and ARAnchor; no camera-relative placement fallback exists.")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Reposition on another surface") { resetRequest += 1; controls=false }
